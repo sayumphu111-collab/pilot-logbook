@@ -1,5 +1,6 @@
 import * as L from './logic.js';
 import { createBackend, firebaseReady } from './backend.js';
+import { fillWorkbook, MAX_PAGES } from './xlsxfill.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -29,6 +30,18 @@ function download(name, blob) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
+
+function loadScript(src, globalName, errMsg) {
+  if (window[globalName]) return Promise.resolve(window[globalName]);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve(window[globalName]);
+    s.onerror = () => reject(new Error(errMsg));
+    document.head.appendChild(s);
+  });
+}
+const loadJSZip = () => loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip', 'โหลดตัวสร้างไฟล์ไม่ได้ — ต้องต่อเน็ตในครั้งแรก');
 
 function loadXLSX() {
   if (window.XLSX) return Promise.resolve(window.XLSX);
@@ -386,23 +399,30 @@ async function importXlsx(file) {
   }
 }
 
+// ส่งออก: กรอกข้อมูลลงไฟล์แม่แบบ (ต้นฉบับที่ล้างข้อมูลแล้ว) จึงได้สูตร/สี/เส้น/ชีต Summary เหมือนต้นฉบับ
 async function exportXlsx() {
   const sorted = sortedFlights();
-  if (!sorted.length) { toast('ยังไม่มีข้อมูลให้ส่งออก'); return; }
+  if (!sorted.length && !state.opening) { toast('ยังไม่มีข้อมูลให้ส่งออก'); return; }
+  const pages = L.paginate(sorted, state.opening);
+  if (pages.length > MAX_PAGES) { toast(`ข้อมูลเกิน ${MAX_PAGES * L.PAGE_SIZE} รายการ (แม่แบบมี ${MAX_PAGES} ชีต)`); return; }
+  const btn = $('#btn-export-xlsx');
+  btn.disabled = true;
   try {
-    const XLSX = await loadXLSX();
-    const wb = XLSX.utils.book_new();
-    const sum = XLSX.utils.aoa_to_sheet(L.exportSummaryAOA(sorted, state.opening));
-    sum['!cols'] = [{ wch: 18 }, ...Array(7).fill({ wch: 9 })];
-    XLSX.utils.book_append_sheet(wb, sum, 'Summary');
-    for (const p of L.paginate(sorted, state.opening)) {
-      const ws = XLSX.utils.aoa_to_sheet(L.exportPageAOA(p));
-      ws['!cols'] = [{ wch: 5 }, { wch: 11 }, { wch: 9 }, { wch: 8 }, { wch: 26 }, { wch: 26 }, { wch: 15 }, { wch: 7 }, ...Array(20).fill({ wch: 8 }), { wch: 30 }];
-      XLSX.utils.book_append_sheet(wb, ws, `S${p.n}`);
-    }
-    XLSX.writeFile(wb, `Pilot_Logbook_${L.todayISO()}.xlsx`);
+    const [JSZip, res] = await Promise.all([loadJSZip(), fetch('template.xlsx')]);
+    if (!res.ok) throw new Error('ไม่พบไฟล์ template.xlsx ในเว็บ');
+    const zip = await JSZip.loadAsync(await res.arrayBuffer());
+    const text = new Map();
+    await fillWorkbook({
+      getText: async (p) => text.get(p) ?? (await zip.file(p).async('string')),
+      setText: (p, t) => { text.set(p, t); zip.file(p, t); },
+    }, pages, state.opening);
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    download(`Pilot_Logbook_${L.todayISO()}.xlsx`, blob);
+    toast('ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets');
   } catch (e) {
     toast(e.message || 'ส่งออกไม่สำเร็จ');
+  } finally {
+    btn.disabled = false;
   }
 }
 

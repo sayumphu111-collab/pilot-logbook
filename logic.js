@@ -84,9 +84,9 @@ export function sumFlights(list) {
   return t;
 }
 
+// เรียงตามลำดับที่กรอก (เหมือนสมุดล็อกบุ๊ก) — ข้อมูลนำเข้าคงลำดับเดิมของไฟล์ Excel, เที่ยวใหม่ต่อท้าย
 export function sortFlights(list) {
-  return [...list].sort((a, b) =>
-    a.date < b.date ? -1 : a.date > b.date ? 1 : (a.ord ?? 0) - (b.ord ?? 0) || (a.id < b.id ? -1 : 1));
+  return [...list].sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 // แบ่งเป็นหน้า (หน้าละ 18 รายการ) พร้อมยอด This Page / Last Page / Forward
@@ -164,60 +164,4 @@ export function filterNew(existing, incoming) {
     else out.push(f);
   }
   return out;
-}
-
-// ---------- ส่งออก Excel (array-of-arrays ต่อชีต) ----------
-const EXPORT_HEAD = [
-  'No.', 'Date', 'Type', 'Number', 'Departure', 'Destination', 'Mission/Duty', 'Duty', 'Hours',
-  'Single', 'Multi', ...AIRCRAFT, 'X-Country', 'Night Un-Aided', 'NVG', 'IFR Training', 'IMC', 'หมายเหตุ',
-];
-
-function totalsToCells(t) {
-  return [
-    t.hours, t.single, t.multi,
-    ...AIRCRAFT.map((a) => t.byType[a] || 0),
-    t.xc, t.nightUn, t.nvg, t.ifr, t.imc,
-  ].map((x) => (x ? Math.round(x * 100) / 100 : 0));
-}
-
-export function exportPageAOA(page) {
-  const aoa = [EXPORT_HEAD];
-  for (let i = 0; i < PAGE_SIZE; i++) {
-    const f = page.rows[i];
-    if (!f) { aoa.push([]); continue; }
-    const single = SINGLE.has(f.type) ? f.hours : '';
-    const multi = MULTI.has(f.type) ? f.hours : '';
-    aoa.push([
-      f.no, dmy(f.date), f.type, f.number, f.dep, f.dest, f.mission, f.duty, f.hours,
-      single, multi,
-      ...AIRCRAFT.map((a) => (f.type === a ? f.hours : '')),
-      f.xc || '', f.nightUn || '', f.nvg || '', f.ifr || '', f.imc || '', f.note || '',
-    ]);
-  }
-  const pad = ['', '', '', '', '', ''];
-  aoa.push([...pad, 'Total This Page', '', ...totalsToCells(page.thisPage)]);
-  aoa.push([...pad, 'Total Last Page', '', ...totalsToCells(page.last)]);
-  aoa.push([...pad, 'Total Forward', '', ...totalsToCells(page.forward)]);
-  return aoa;
-}
-
-export function exportSummaryAOA(sorted, opening = null) {
-  const t = addTotals(opening, sumFlights(sorted));
-  const r2 = (x) => (x ? Math.round(x * 100) / 100 : '');
-  const types = [...new Set([...AIRCRAFT, ...Object.keys(t.byType)])].filter((x) => t.byType[x]);
-  const aoa = [['ARMY PILOT LOGBOOK — Summary'], [], ['TYPE', ...DUTIES, 'TOTAL']];
-  for (const ty of types) {
-    aoa.push([ty, ...DUTIES.map((d) => r2(t.byTypeDuty[`${ty}|${d}`])), r2(t.byType[ty])]);
-  }
-  aoa.push(['TOTAL', ...DUTIES.map(() => ''), r2(t.hours)]);
-  aoa.push([]);
-  aoa.push(['Single engine', r2(t.single)]);
-  aoa.push(['Multi engine', r2(t.multi)]);
-  aoa.push(['Simulator', r2(t.sim)]);
-  aoa.push(['X-Country', r2(t.xc)]);
-  aoa.push(['Night Un-Aided', r2(t.nightUn)]);
-  aoa.push(['Night NVG', r2(t.nvg)]);
-  aoa.push(['IFR Training', r2(t.ifr)]);
-  aoa.push(['IMC', r2(t.imc)]);
-  return aoa;
 }
