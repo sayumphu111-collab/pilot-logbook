@@ -213,10 +213,10 @@ function onSubmit(e) {
   if (state.editing) {
     const old = state.flights.find((x) => x.id === state.editing);
     f.id = state.editing;
-    f.ord = old?.ord ?? Date.now();
+    f.ord = old && old.date === f.date ? old.ord : L.slotOrd(sortedFlights().filter((x) => x.id !== f.id), f.date);
   } else {
     f.id = crypto.randomUUID();
-    f.ord = Date.now();
+    f.ord = L.slotOrd(sortedFlights(), f.date);
   }
   backend.saveFlight(f);
 
@@ -430,6 +430,25 @@ function saveOpeningFromDialog() {
   toast('บันทึกยอดยกมาแล้ว');
 }
 
+// ----- เรียงตามวันที่
+function renderOrderInfo() {
+  const n = L.countOutOfOrder(sortedFlights());
+  $('#order-info').textContent = n
+    ? `ตอนนี้มี ${n} รายการที่วันที่ไม่เรียงตามลำดับ`
+    : 'ข้อมูลทั้งหมดเรียงตามวันที่แล้ว';
+  $('#btn-sort').disabled = !n;
+}
+
+function sortByDate() {
+  const sorted = sortedFlights();
+  const n = L.countOutOfOrder(sorted);
+  if (!n) { toast('เรียงตามวันที่อยู่แล้ว'); return; }
+  if (!confirm(`เรียงเที่ยวบินทั้งหมดใหม่ตามวันที่ (${n} รายการจะเปลี่ยนตำแหน่ง)\n\nรายการที่ย้ายอาจข้ามหน้า ยอดรวมแต่ละหน้าและไฟล์ Excel ที่ส่งออกจะเปลี่ยนตาม แต่ยอดสะสมรวมเท่าเดิม\nแนะนำให้สำรองข้อมูล (JSON) ก่อน\n\nดำเนินการต่อไหม?`)) return;
+  const changed = L.reorderByDate(sorted);
+  backend.saveMany(changed);
+  toast(`เรียงตามวันที่แล้ว (${changed.length} รายการ)`);
+}
+
 // ----- นำเข้า/ส่งออก
 async function importXlsx(file) {
   try {
@@ -537,7 +556,7 @@ function renderCurrent() {
   if (state.view === 'add') renderRecent();
   else if (state.view === 'list') renderList();
   else if (state.view === 'summary') renderSummary();
-  else if (state.view === 'settings') renderSettings();
+  else if (state.view === 'settings') { renderSettings(); renderOrderInfo(); }
 }
 
 // ---------------------------------------------------------------- ธีม
@@ -595,6 +614,7 @@ async function main() {
   $('#dlg-opening').addEventListener('close', () => { if ($('#dlg-opening').returnValue === 'save') saveOpeningFromDialog(); });
   $('#btn-export-xlsx').addEventListener('click', exportXlsx);
   $('#btn-export-json').addEventListener('click', exportJson);
+  $('#btn-sort').addEventListener('click', sortByDate);
   $('#file-xlsx').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importXlsx(f); });
   $('#file-json').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importJson(f); });
 

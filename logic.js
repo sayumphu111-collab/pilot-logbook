@@ -89,6 +89,38 @@ export function sortFlights(list) {
   return [...list].sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+// หาค่า ord ให้เที่ยวบินใหม่ เพื่อแทรกตามวันที่ (หลังเที่ยวสุดท้ายที่วันที่ <= วันที่นี้)
+// sorted = รายการที่เรียงตาม ord แล้ว (ไม่รวมเที่ยวที่กำลังแก้)
+export function slotOrd(sorted, date) {
+  if (!sorted.length) return Date.now();
+  let at = -1;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i].date <= date) { at = i; break; }
+  }
+  const last = sorted.length - 1;
+  if (at === last) return Math.max(Date.now(), (sorted[last].ord ?? 0) + 1);
+  if (at === -1) return (sorted[0].ord ?? 0) - 1;
+  return ((sorted[at].ord ?? 0) + (sorted[at + 1].ord ?? 0)) / 2;
+}
+
+// จำนวนรายการที่วันที่ย้อนกลับเมื่อเทียบกับรายการก่อนหน้า
+export function countOutOfOrder(sorted) {
+  let n = 0;
+  for (let i = 1; i < sorted.length; i++) if (sorted[i].date < sorted[i - 1].date) n++;
+  return n;
+}
+
+// เรียงใหม่ตามวันที่ (คงลำดับเดิมของเที่ยวที่วันเดียวกัน) → คืนเฉพาะรายการที่ ord เปลี่ยน
+export function reorderByDate(sorted) {
+  const byDate = sorted
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => (a.f.date < b.f.date ? -1 : a.f.date > b.f.date ? 1 : a.i - b.i))
+    .map((x) => x.f);
+  const changed = [];
+  byDate.forEach((f, i) => { if (f.ord !== i) changed.push({ ...f, ord: i }); });
+  return changed;
+}
+
 // แบ่งเป็นหน้า (หน้าละ 18 รายการ) พร้อมยอด This Page / Last Page / Forward
 // หน้าแรกใช้ยอดยกมา (opening) เป็น Last Page
 export function paginate(sorted, opening = null) {
