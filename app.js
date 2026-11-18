@@ -66,7 +66,7 @@ function renderHeader() {
   const chip = $('#sync');
   const labels = { local: 'ในเครื่อง', synced: 'ซิงค์แล้ว', pending: 'กำลังซิงค์', offline: 'ออฟไลน์' };
   chip.hidden = !state.status || !state.user;
-  chip.className = `chip ${state.status}`;
+  chip.className = `chip-status ${state.status}`;
   chip.textContent = labels[state.status] || '';
 }
 
@@ -76,31 +76,84 @@ const LS = {
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ข้าม */ } },
 };
 
-function initForm() {
-  const opt = (arr) => arr.map((v) => `<option>${esc(v)}</option>`).join('');
-  $('#f-type').innerHTML = opt(L.AIRCRAFT);
-  $('#f-duty').innerHTML = opt(L.DUTIES);
-  $('#conds').innerHTML = L.CONDS.map((c) => `
-    <div class="cond"><label>${c.label}
-      <div class="row">
-        <input id="c-${c.key}" type="number" inputmode="decimal" step="0.1" min="0" placeholder="0.0">
-        <button type="button" data-fill="${c.key}" title="ใช้เท่ากับชั่วโมงบิน">= ชม.บิน</button>
-      </div></label></div>`).join('');
+const SHORT = { xc: 'XC', nightUn: 'Night', nvg: 'NVG', ifr: 'IFR', imc: 'IMC' };
 
-  const last = LS.get('lb.last', {});
-  resetForm(last);
+// ชิปแทน dropdown (แตะง่ายบนมือถือ/ไอแพด) — ยังเก็บค่าใน <select> ที่ซ่อนไว้
+function buildChips(boxSel, selSel, values) {
+  const sel = $(selSel);
+  const box = $(boxSel);
+  sel.innerHTML = values.map((v) => `<option>${esc(v)}</option>`).join('');
+  box.innerHTML = values.map((v) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(v)}">${esc(v)}</button>`).join('');
+  box.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    sel.value = b.dataset.v;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    syncChips();
+  });
+}
+
+function syncChips() {
+  for (const [box, sel] of [['#chips-type', '#f-type'], ['#chips-duty', '#f-duty']]) {
+    const v = $(sel).value;
+    $(box).querySelectorAll('.chip').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === v)));
+  }
+}
+
+// สภาพการบิน: ชิปเปิด/ปิด + ช่องตัวเลข (ค่าเริ่มต้น = เท่าชั่วโมงบิน และตามไปเมื่อแก้ชั่วโมงบิน)
+const condEl = (key) => document.querySelector(`.cond[data-key="${key}"]`);
+
+function setCond(key, value, auto = false) {
+  const el = condEl(key);
+  const inp = el.querySelector('input');
+  const on = value !== null;
+  el.querySelector('.cond-chip').setAttribute('aria-pressed', String(on));
+  inp.hidden = !on;
+  inp.value = on && value !== '' ? value : '';
+  el.dataset.auto = on && auto ? '1' : '';
+}
+
+function readCond(key, hours) {
+  const el = condEl(key);
+  if (el.querySelector('.cond-chip').getAttribute('aria-pressed') !== 'true') return 0;
+  const v = L.num(el.querySelector('input').value);
+  return v > 0 ? v : hours;
+}
+
+function syncAutoConds() {
+  const h = $('#f-hours').value;
+  document.querySelectorAll('.cond[data-auto="1"]').forEach((el) => { el.querySelector('input').value = h; });
+}
+
+function initForm() {
+  buildChips('#chips-type', '#f-type', L.AIRCRAFT);
+  buildChips('#chips-duty', '#f-duty', L.DUTIES);
+  $('#conds').innerHTML = L.CONDS.map((c) => `
+    <div class="cond" data-key="${c.key}">
+      <button type="button" class="chip cond-chip" aria-pressed="false">${c.label}</button>
+      <input id="c-${c.key}" type="number" inputmode="decimal" step="0.1" min="0" placeholder="0.0" aria-label="${c.label} (ชั่วโมง)" hidden>
+    </div>`).join('');
+
+  resetForm(LS.get('lb.last', {}));
 
   $('#f-type').addEventListener('change', () => {
     const nums = LS.get('lb.nums', {});
     $('#f-number').value = nums[$('#f-type').value] || '';
   });
   $('#conds').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-fill]');
-    if (!b) return;
-    const h = $('#f-hours').value;
-    if (!h) { $('#f-hours').focus(); return; }
-    $(`#c-${b.dataset.fill}`).value = h;
+    const chip = e.target.closest('.cond-chip');
+    if (!chip) return;
+    const key = chip.parentElement.dataset.key;
+    if (chip.getAttribute('aria-pressed') === 'true') setCond(key, null);
+    else setCond(key, $('#f-hours').value || '', true);
   });
+  $('#conds').addEventListener('input', (e) => { const el = e.target.closest('.cond'); if (el) el.dataset.auto = ''; });
+  $('#f-hours').addEventListener('input', syncAutoConds);
+  document.querySelectorAll('.stepper [data-step]').forEach((b) => b.addEventListener('click', () => {
+    const next = Math.max(0, Math.round((L.num($('#f-hours').value) + Number(b.dataset.step)) * 10) / 10);
+    $('#f-hours').value = next ? next.toFixed(1) : '';
+    syncAutoConds();
+  }));
   $('#form').addEventListener('submit', onSubmit);
   $('#btn-cancel').addEventListener('click', () => { exitEdit(); showView('list'); });
   $('#btn-delete').addEventListener('click', onDelete);
@@ -117,10 +170,12 @@ function resetForm(keep = {}) {
   $('#f-mission').value = keep.mission || '';
   $('#f-hours').value = '';
   $('#f-note').value = '';
-  for (const c of L.CONDS) $(`#c-${c.key}`).value = '';
+  for (const c of L.CONDS) setCond(c.key, null);
+  syncChips();
 }
 
 function readForm() {
+  const hours = L.num($('#f-hours').value);
   const f = {
     date: $('#f-date').value,
     type: $('#f-type').value,
@@ -129,10 +184,10 @@ function readForm() {
     dest: $('#f-dest').value.trim(),
     mission: $('#f-mission').value.trim(),
     duty: $('#f-duty').value,
-    hours: L.num($('#f-hours').value),
+    hours,
     note: $('#f-note').value.trim(),
   };
-  for (const c of L.CONDS) f[c.key] = L.num($(`#c-${c.key}`).value);
+  for (const c of L.CONDS) f[c.key] = readCond(c.key, hours);
   return f;
 }
 
@@ -195,8 +250,12 @@ function startEdit(id) {
   $('#f-mission').value = f.mission || '';
   $('#f-hours').value = f.hours;
   $('#f-note').value = f.note || '';
-  for (const c of L.CONDS) $(`#c-${c.key}`).value = f[c.key] || '';
-  $('#btn-save').textContent = 'บันทึกการแก้ไข';
+  for (const c of L.CONDS) {
+    const v = L.num(f[c.key]);
+    setCond(c.key, v > 0 ? v : null, v > 0 && Math.abs(v - L.num(f.hours)) < 1e-9);
+  }
+  syncChips();
+  $('#btn-save').textContent = 'บันทึก';
   $('#btn-cancel').hidden = false;
   $('#btn-delete').hidden = false;
   showView('add');
@@ -237,12 +296,23 @@ function refreshSuggestions() {
 // ---------------------------------------------------------------- รายการ
 function flightRow(f, no) {
   const route = [f.dep, f.dest].filter(Boolean).join(' → ');
-  return `<button class="flight" data-id="${esc(f.id)}">
-    <div class="l1"><span>#${no} · ${L.dmy(f.date)} · ${esc(f.type)}${f.number ? ' ' + esc(f.number) : ''}<span class="tag">${esc(f.duty)}</span></span>
-      <span class="hrs">${L.fmt(f.hours)}</span></div>
-    <div class="l2">${esc(route)}${f.mission ? (route ? ' · ' : '') + esc(f.mission) : ''}</div>
-    ${f.note ? `<div class="l3">${esc(f.note)}</div>` : ''}
+  const minis = L.CONDS.filter((c) => L.num(f[c.key]) > 0).map((c) => `<span class="mini">${SHORT[c.key]}</span>`).join('');
+  const meta = [f.mission, f.note].filter(Boolean).map(esc).join(' · ');
+  return `<button class="flight" data-id="${esc(f.id)}" data-type="${esc(f.type)}">
+    <span class="f-main">
+      <span class="f-top"><span class="f-no">#${no}</span><span>${L.dmy(f.date)}</span><span class="f-type">${esc(f.type)}${f.number ? ' ' + esc(f.number) : ''}</span><span class="tag">${esc(f.duty)}</span></span>
+      ${route ? `<span class="f-route">${esc(route)}</span>` : ''}
+      ${minis || meta ? `<span class="f-meta">${minis}${meta}</span>` : ''}
+    </span>
+    <span class="f-hours"><b>${L.fmt(f.hours)}</b><small>ชม.</small></span>
   </button>`;
+}
+
+function renderRecent() {
+  const box = $('#recent-list');
+  const sorted = sortedFlights();
+  if (!sorted.length) { box.innerHTML = '<div class="empty small">ยังไม่มีเที่ยวบิน</div>'; return; }
+  box.innerHTML = sorted.slice(-8).reverse().map((f, i) => flightRow(f, sorted.length - i)).join('');
 }
 
 function renderList() {
@@ -258,14 +328,14 @@ function renderList() {
     const hit = sorted.filter((f) => [f.date, L.dmy(f.date), f.type, f.number, f.dep, f.dest, f.mission, f.duty, f.note].join(' ').toLowerCase().includes(q)).reverse();
     const sum = L.sumFlights(hit).hours;
     box.innerHTML = `<div class="page-head"><span>พบ ${hit.length} รายการ</span><span class="muted">รวม ${L.fmt(sum)} ชม.</span></div>`
-      + (hit.map((f) => flightRow(f, noOf.get(f.id))).join('') || '<div class="empty">ไม่พบรายการที่ตรงกับคำค้น</div>');
+      + (hit.length ? `<div class="rows">${hit.map((f) => flightRow(f, noOf.get(f.id))).join('')}</div>` : '<div class="empty">ไม่พบรายการที่ตรงกับคำค้น</div>');
     return;
   }
   const pages = L.paginate(sorted, state.opening);
   box.innerHTML = pages.slice().reverse().map((p) => `
     <div class="page-head"><span>หน้า ${p.n}</span>
       <span class="muted">${p.rows.length}/${L.PAGE_SIZE} รายการ · หน้านี้ ${L.fmt(p.thisPage.hours)} · สะสม ${L.fmt(p.forward.hours)} ชม.</span></div>
-    ${p.rows.map((f) => flightRow(f, f.no)).join('')}`).join('');
+    <div class="rows">${p.rows.map((f) => flightRow(f, f.no)).join('')}</div>`).join('');
 }
 
 // ---------------------------------------------------------------- สรุป
@@ -287,8 +357,12 @@ function renderSummary() {
   };
   const stat = (label, v) => `<div class="stat"><b>${L.fmt(v)}</b><span>${label}</span></div>`;
 
+  const maxH = Math.max(1, ...types.map((ty) => t.byType[ty]));
+  const bars = types.map((ty) => `<div class="bar-row" data-type="${esc(ty)}"><span>${esc(ty)}</span><div class="bar"><i style="width:${((t.byType[ty] / maxH) * 100).toFixed(1)}%"></i></div><b>${L.fmt(t.byType[ty])}</b></div>`).join('');
+
   $('#summary').innerHTML = `
-    <section class="card"><h2>ชั่วโมงบินตามแบบอากาศยาน</h2>
+    <section class="card"><h2>สัดส่วนตามแบบอากาศยาน</h2>${bars || '<p class="muted">ยังไม่มีข้อมูล</p>'}</section>
+    <section class="card"><h2>ชั่วโมงบินตามแบบ × หน้าที่</h2>
       <div class="scroll"><table>
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
@@ -460,17 +534,57 @@ function showView(name) {
 
 function renderCurrent() {
   renderHeader();
-  if (state.view === 'list') renderList();
+  if (state.view === 'add') renderRecent();
+  else if (state.view === 'list') renderList();
   else if (state.view === 'summary') renderSummary();
   else if (state.view === 'settings') renderSettings();
+}
+
+// ---------------------------------------------------------------- ธีม
+const ACCENTS = [
+  { id: 'olive', name: 'เขียวทหาร', h: '#34402a', acc: '#c9b98a' },
+  { id: 'navy', name: 'น้ำเงินกรมท่า', h: '#1f3150', acc: '#e3b45d' },
+  { id: 'teal', name: 'เขียวมรกต', h: '#134549', acc: '#e6a95a' },
+  { id: 'graphite', name: 'เทาถ่าน', h: '#2a2e35', acc: '#ec7a3d' },
+];
+const MODES = [['auto', 'อัตโนมัติ'], ['light', 'สว่าง'], ['dark', 'มืด']];
+
+function applyTheme(t) {
+  const r = document.documentElement;
+  if (t.mode === 'light' || t.mode === 'dark') r.dataset.theme = t.mode; else delete r.dataset.theme;
+  if (t.accent && t.accent !== 'olive') r.dataset.accent = t.accent; else delete r.dataset.accent;
+  delete r.dataset.mode;
+  requestAnimationFrame(() => {
+    // แปลงสีที่คำนวณแล้ว (อาจเป็น color(srgb …)) เป็น #rrggbb เพื่อให้ meta theme-color ใช้ได้ทุกเบราว์เซอร์
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = 1;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.fillStyle = getComputedStyle($('.top')).backgroundColor;
+    cx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = cx.getImageData(0, 0, 1, 1).data;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`);
+  });
+  $('#theme-mode').querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === (t.mode || 'auto'))));
+  $('#theme-accent').querySelectorAll('button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.accent === (t.accent || 'olive'))));
+}
+
+function initTheme() {
+  $('#theme-mode').innerHTML = MODES.map(([id, label]) => `<button type="button" role="radio" aria-checked="false" data-mode="${id}">${label}</button>`).join('');
+  $('#theme-accent').innerHTML = ACCENTS.map((a) => `<button type="button" class="swatch" role="radio" aria-checked="false" data-accent="${a.id}"><i style="--sw-h:${a.h};--sw-acc:${a.acc}"></i>${a.name}</button>`).join('');
+  const pick = (patch) => { const t = { ...LS.get('lb.theme', {}), ...patch }; LS.set('lb.theme', t); applyTheme(t); };
+  $('#theme-mode').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) pick({ mode: b.dataset.mode }); });
+  $('#theme-accent').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) pick({ accent: b.dataset.accent }); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(LS.get('lb.theme', {})));
+  applyTheme(LS.get('lb.theme', {}));
 }
 
 // ---------------------------------------------------------------- เริ่มต้น
 async function main() {
   initForm();
+  initTheme();
 
   document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
-  $('#list').addEventListener('click', (e) => {
+  document.addEventListener('click', (e) => {
     const b = e.target.closest('.flight');
     if (b) startEdit(b.dataset.id);
   });

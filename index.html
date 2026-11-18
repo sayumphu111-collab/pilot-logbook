@@ -3,12 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#3d4a2b">
+  <meta name="theme-color" content="#34402a">
+  <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Logbook">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <script>
+    // ใช้ธีมที่เลือกไว้ทันที ก่อนวาดหน้า (กันจอวาบ)
+    try {
+      var t = JSON.parse(localStorage.getItem('lb.theme') || '{}');
+      if (t.mode === 'light' || t.mode === 'dark') document.documentElement.dataset.theme = t.mode;
+      if (t.accent && t.accent !== 'olive') document.documentElement.dataset.accent = t.accent;
+    } catch (e) {}
+  </script>
   <link rel="stylesheet" href="style.css">
   <title>Pilot Logbook</title>
 </head>
@@ -16,7 +27,7 @@
   <header class="top">
     <div class="brand">
       <span class="brand-name">Pilot Logbook</span>
-      <span id="sync" class="chip" hidden></span>
+      <span id="sync" class="chip-status" hidden></span>
     </div>
     <div class="hobbs" aria-live="polite">
       <div id="hobbs" class="hobbs-digits" aria-label="ชั่วโมงบินรวม">-----.-</div>
@@ -26,76 +37,94 @@
 
   <!-- เข้าสู่ระบบ -->
   <main id="view-login" class="view" hidden>
-    <section class="card center">
+    <section class="card login">
+      <svg class="logo" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="20" /><path d="M9 17 39 31M39 17 9 31"/><circle class="hub" cx="24" cy="24" r="3"/></svg>
       <h1>เข้าสู่ระบบ</h1>
-      <p class="muted">ใช้บัญชี Google เพื่อซิงค์ล็อกบุ๊กข้ามมือถือและคอมพิวเตอร์</p>
-      <button id="btn-login" class="btn primary">เข้าสู่ระบบด้วย Google</button>
+      <p class="muted">ใช้บัญชี Google เพื่อซิงค์ล็อกบุ๊กข้ามมือถือ ไอแพด และคอมพิวเตอร์</p>
+      <button id="btn-login" class="btn primary block">เข้าสู่ระบบด้วย Google</button>
     </section>
   </main>
 
   <!-- บันทึกเที่ยวบิน -->
   <main id="view-add" class="view" hidden>
-    <form id="form" class="card" autocomplete="off">
-      <h1 id="form-title">เพิ่มเที่ยวบิน</h1>
+    <div class="add-layout">
+      <form id="form" class="card form" autocomplete="off">
+        <h1 id="form-title">เพิ่มเที่ยวบิน</h1>
 
-      <div class="grid2">
-        <label>วันที่
-          <input id="f-date" type="date" required>
+        <div class="grid2 hrs">
+          <label class="field">วันที่
+            <input id="f-date" type="date" required>
+          </label>
+          <div class="field">
+            <label class="lbl" for="f-hours">ชั่วโมงบิน</label>
+            <div class="stepper">
+              <button type="button" data-step="-0.1" aria-label="ลด 0.1 ชั่วโมง">−</button>
+              <input id="f-hours" type="number" inputmode="decimal" step="0.1" min="0" max="24" required placeholder="0.0">
+              <button type="button" data-step="0.1" aria-label="เพิ่ม 0.1 ชั่วโมง">+</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="lbl" id="lbl-type">แบบอากาศยาน</span>
+          <div id="chips-type" class="chips" role="radiogroup" aria-labelledby="lbl-type"></div>
+          <select id="f-type" hidden tabindex="-1" aria-hidden="true"></select>
+        </div>
+
+        <div class="field">
+          <span class="lbl" id="lbl-duty">หน้าที่</span>
+          <div id="chips-duty" class="chips" role="radiogroup" aria-labelledby="lbl-duty"></div>
+          <select id="f-duty" hidden tabindex="-1" aria-hidden="true"></select>
+        </div>
+
+        <div class="grid2">
+          <label class="field">หมายเลขอากาศยาน
+            <input id="f-number" type="text" inputmode="numeric" placeholder="521">
+          </label>
+          <label class="field">ภารกิจ
+            <input id="f-mission" type="text" list="dl-missions" placeholder="Ferry Flight">
+          </label>
+        </div>
+
+        <div class="grid2">
+          <label class="field">ต้นทาง
+            <input id="f-dep" type="text" list="dl-places" placeholder="ค่ายสุรนารี">
+          </label>
+          <label class="field">ปลายทาง
+            <input id="f-dest" type="text" list="dl-places">
+          </label>
+        </div>
+
+        <div class="field">
+          <span class="lbl" id="lbl-cond">สภาพการบิน <small class="muted">(แตะเพื่อเลือก ใช้เท่าชั่วโมงบิน แก้ตัวเลขได้)</small></span>
+          <div id="conds" class="conds" role="group" aria-labelledby="lbl-cond"></div>
+        </div>
+
+        <label class="field">หมายเหตุ
+          <input id="f-note" type="text">
         </label>
-        <label>ชั่วโมงบิน
-          <input id="f-hours" type="number" inputmode="decimal" step="0.1" min="0" max="24" required placeholder="0.0">
-        </label>
-      </div>
 
-      <div class="grid3">
-        <label>แบบอากาศยาน
-          <select id="f-type"></select>
-        </label>
-        <label>หมายเลข
-          <input id="f-number" type="text" inputmode="numeric" placeholder="521">
-        </label>
-        <label>หน้าที่
-          <select id="f-duty"></select>
-        </label>
-      </div>
+        <datalist id="dl-places"></datalist>
+        <datalist id="dl-missions"></datalist>
 
-      <div class="grid2">
-        <label>ต้นทาง
-          <input id="f-dep" type="text" list="dl-places" placeholder="ค่ายสุรนารี">
-        </label>
-        <label>ปลายทาง
-          <input id="f-dest" type="text" list="dl-places">
-        </label>
-      </div>
+        <p id="form-error" class="error" role="alert" hidden></p>
+        <div class="actions">
+          <button id="btn-save" class="btn primary grow" type="submit">บันทึกเที่ยวบิน</button>
+          <button id="btn-cancel" class="btn" type="button" hidden>ยกเลิก</button>
+          <button id="btn-delete" class="btn danger" type="button" hidden>ลบ</button>
+        </div>
+      </form>
 
-      <label>ภารกิจ
-        <input id="f-mission" type="text" list="dl-missions" placeholder="Ferry Flight">
-      </label>
-
-      <fieldset>
-        <legend>สภาพการบิน (ชั่วโมง)</legend>
-        <div id="conds" class="conds"></div>
-      </fieldset>
-
-      <label>หมายเหตุ
-        <input id="f-note" type="text">
-      </label>
-
-      <datalist id="dl-places"></datalist>
-      <datalist id="dl-missions"></datalist>
-
-      <p id="form-error" class="error" role="alert" hidden></p>
-      <div class="actions">
-        <button id="btn-save" class="btn primary" type="submit">บันทึกเที่ยวบิน</button>
-        <button id="btn-cancel" class="btn" type="button" hidden>ยกเลิกการแก้ไข</button>
-        <button id="btn-delete" class="btn danger" type="button" hidden>ลบเที่ยวบินนี้</button>
-      </div>
-    </form>
+      <aside class="card recent" aria-label="เที่ยวบินล่าสุด">
+        <h2>เที่ยวบินล่าสุด</h2>
+        <div id="recent-list"></div>
+      </aside>
+    </div>
   </main>
 
   <!-- รายการ -->
   <main id="view-list" class="view" hidden>
-    <div class="card">
+    <div class="card search-card">
       <input id="search" type="search" placeholder="ค้นหา เช่น ค่ายสุรนารี, AW139, Ferry" aria-label="ค้นหาเที่ยวบิน">
     </div>
     <div id="list"></div>
@@ -108,6 +137,14 @@
 
   <!-- ตั้งค่า -->
   <main id="view-settings" class="view" hidden>
+    <section class="card">
+      <h2>ธีมและการแสดงผล</h2>
+      <div class="lbl">โหมด</div>
+      <div id="theme-mode" class="seg" role="radiogroup" aria-label="โหมดสี"></div>
+      <div class="lbl" style="margin-top:14px">สีหลัก</div>
+      <div id="theme-accent" class="swatches" role="radiogroup" aria-label="สีหลัก"></div>
+    </section>
+
     <section class="card">
       <h2>บัญชีและการซิงค์</h2>
       <p id="account-info" class="muted"></p>
@@ -123,14 +160,16 @@
 
     <section class="card">
       <h2>นำเข้า / ส่งออก</h2>
-      <label class="btn file">นำเข้าจากไฟล์ Excel (.xlsx)
-        <input id="file-xlsx" type="file" accept=".xlsx,.xlsm">
-      </label>
-      <button id="btn-export-xlsx" class="btn">ส่งออกเป็น Excel</button>
-      <button id="btn-export-json" class="btn">สำรองข้อมูล (JSON)</button>
-      <label class="btn file">กู้คืนจากไฟล์สำรอง (JSON)
-        <input id="file-json" type="file" accept=".json,application/json">
-      </label>
+      <div class="btn-col">
+        <label class="btn file">นำเข้าจากไฟล์ Excel (.xlsx)
+          <input id="file-xlsx" type="file" accept=".xlsx,.xlsm">
+        </label>
+        <button id="btn-export-xlsx" class="btn">ส่งออกเป็น Excel</button>
+        <button id="btn-export-json" class="btn">สำรองข้อมูล (JSON)</button>
+        <label class="btn file">กู้คืนจากไฟล์สำรอง (JSON)
+          <input id="file-json" type="file" accept=".json,application/json">
+        </label>
+      </div>
       <p class="muted small">ส่งออกเป็นไฟล์รูปแบบเดียวกับต้นฉบับทุกอย่าง (ชีต Summary + S1–S50 พร้อมสูตร) เปิดด้วย Excel หรือ Google Sheets</p>
     </section>
   </main>
@@ -140,17 +179,28 @@
       <h2>ยอดยกมา</h2>
       <div id="opening-fields"></div>
       <div class="actions">
-        <button class="btn primary" id="btn-opening-save" value="save">บันทึก</button>
+        <button class="btn primary grow" id="btn-opening-save" value="save">บันทึก</button>
         <button class="btn" value="cancel" formnovalidate>ยกเลิก</button>
       </div>
     </form>
   </dialog>
 
-  <nav class="tabs" id="tabs" hidden>
-    <button data-view="add" class="on">บันทึก</button>
-    <button data-view="list">รายการ</button>
-    <button data-view="summary">สรุป</button>
-    <button data-view="settings">ตั้งค่า</button>
+  <nav class="tabs" id="tabs" aria-label="เมนูหลัก" hidden>
+    <div class="rail-logo" aria-hidden="true">
+      <svg viewBox="0 0 48 48" width="34" height="34"><circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M9 17 39 31M39 17 9 31" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><circle cx="24" cy="24" r="3.5" fill="currentColor"/></svg>
+    </div>
+    <button data-view="add" class="on">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg><span>บันทึก</span>
+    </button>
+    <button data-view="list">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span>รายการ</span>
+    </button>
+    <button data-view="summary">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-8M12 20V5M19 20v-5"/></svg><span>สรุป</span>
+    </button>
+    <button data-view="settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>ตั้งค่า</span>
+    </button>
   </nav>
 
   <div id="toast" class="toast" role="status" hidden></div>

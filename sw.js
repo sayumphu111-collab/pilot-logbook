@@ -1,7 +1,7 @@
 // Service worker: เปิดแอปได้ตอนออฟไลน์ (แคชไฟล์แอป + ไลบรารีจาก CDN)
-const CACHE = 'pilot-logbook-v2';
+const CACHE = 'pilot-logbook-v3';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'xlsxfill.js', 'backend.js', 'firebase-config.js', 'manifest.webmanifest', 'template.xlsx', 'icons/icon-192.png'];
-const CDN_HOSTS = ['www.gstatic.com', 'cdnjs.cloudflare.com'];
+const CDN_HOSTS = ['www.gstatic.com', 'cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
