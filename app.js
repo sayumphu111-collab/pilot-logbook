@@ -301,7 +301,7 @@ function onSubmit(e) {
     toast('แก้ไขเที่ยวบินแล้ว', 5000);
     showView('list');
   } else {
-    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 5000);
+    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 3000);
     resetForm({ ...f, dep: f.dest });
   }
 
