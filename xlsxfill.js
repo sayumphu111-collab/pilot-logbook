@@ -1,6 +1,6 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, num } from './logic.js';
+import { AIRCRAFT, CONDS, PAGE_SIZE, isDefaultAircraft, num, slotDuties } from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -91,7 +91,7 @@ export function pageValues(page) {
 
 // ---------- ยอดยกมา (S1 แถว 23) ----------
 const DUTY_BLOCKS = [
-  ['CP/PI', 'Z', AIRCRAFT.length],
+  ['CP/PI', 'Z', 8],
   ['PC', 'AH', 6],
   ['MP', 'AN', 5],
   ['IP', 'AS', 5],
@@ -102,12 +102,112 @@ export function openingValues(o) {
   const v = {};
   const put = (col, x) => { v[`${col}23`] = Math.round(num(x) * 100) / 100; };
   put('I', t.hours); put('J', t.single); put('K', t.multi);
-  AIRCRAFT.forEach((a, i) => put(colLetters(colNum('L') + i), t.byType?.[a]));
+  for (let i = 0; i < 8; i++) put(colLetters(colNum('L') + i), AIRCRAFT[i] ? t.byType?.[AIRCRAFT[i]] : 0);
   put('T', t.xc); put('U', t.nightUn); put('V', t.nvg); put('W', t.ifr); put('X', t.imc);
   for (const [duty, start, count] of DUTY_BLOCKS) {
-    for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), t.byTypeDuty?.[`${AIRCRAFT[i]}|${duty}`]);
+    for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|${duty}`] : 0);
   }
   return v;
+}
+
+
+// ---------- ปรับแม่แบบให้ตรงกับรายการแบบอากาศยานของผู้ใช้ ----------
+// แม่แบบมี 8 ช่องแบบอากาศยาน (ชื่อฝังอยู่ในสูตรและหัวคอลัมน์) → เปลี่ยนชื่อ/ชนิดเครื่องยนต์ตามที่ผู้ใช้ตั้ง
+const TPL_NAMES = ['AW139', 'AW149', 'AS550', 'BELL212', 'UH1', 'H269', 'EN48', 'SIM']; // ชื่อในสูตร
+const TPL_HEADERS = ['AW139', 'AW149', 'AS550', 'Bell212', 'UH1', 'H269', 'EN48', 'SIM']; // ชื่อในหัวคอลัมน์
+const UNUSED = '?'; // ช่องที่ไม่ได้ใช้: ชื่อที่ไม่มีทางตรงกับเที่ยวบินใด
+const q = (x) => `&quot;${x}&quot;`;
+const F_OPEN = '<f(?:\\s[^>]*[^/>])?>'; // แท็ก <f> ที่มีเนื้อหา (ไม่ใช่ <f .../> ของสูตรร่วม)
+
+// เปลี่ยนชื่อในสูตรทุกที่พร้อมกัน (ผ่านโทเค็น กันกรณีสลับชื่อกันระหว่างช่อง)
+export function renameFormulaNames(xml, slotNames) {
+  return xml.replace(new RegExp(`(${F_OPEN})([\\s\\S]*?)(</f>)`, 'g'), (m, a, body, z) => {
+    let b = body;
+    TPL_NAMES.forEach((old, i) => { b = b.split(q(old)).join(`&quot;\uE000${i}\uE000&quot;`); });
+    slotNames.forEach((nw, i) => { b = b.split(`\uE000${i}\uE000`).join(xmlEsc(nw)); });
+    return a + b + z;
+  });
+}
+
+export function setFormulaText(xml, ref, text) {
+  const re = new RegExp(`(<c r="${ref}"(?:\\s+[A-Za-z:]+="[^"]*")*>\\s*${F_OPEN})([\\s\\S]*?)(</f>)`);
+  return xml.replace(re, (m, a, b, z) => a + text + z);
+}
+
+const engineFormula = (names, r) =>
+  (names.length ? `IF(OR(${names.map((n) => `C${r}=${q(xmlEsc(n))}`).join(',')}), I${r},${q('-')})` : `IF(FALSE, I${r},${q('-')})`);
+
+// รายการ dropdown ของช่อง "Type" (C)
+export function retargetTypeValidation(xml, names) {
+  return xml.replace(
+    /(<dataValidation [^>]*sqref="C\d+:C\d+"[^>]*><formula1>)[\s\S]*?(<\/formula1>)/g,
+    (m, a, z) => `${a}${q(names.map(xmlEsc).join(','))}${z}`,
+  );
+}
+
+export function renameSharedStrings(sst, slotNames) {
+  return sst.split(/(<si>[\s\S]*?<\/si>)/).map((p) => {
+    if (!p.startsWith('<si>')) return p;
+    const i = TPL_HEADERS.indexOf(p.replace(/<[^>]+>/g, ''));
+    if (i < 0) return p;
+    return slotNames[i] === UNUSED ? '<si><t/></si>' : `<si><t>${xmlEsc(slotNames[i])}</t></si>`;
+  }).join('');
+}
+
+// ชีต Summary: เขียนแถวแบบอากาศยาน (แถว 5–12) ใหม่ตามรายการของผู้ใช้
+const DUTY_FIRST_COL = { 'CP/PI': 'Z', PC: 'AH', MP: 'AN', IP: 'AS', SP: 'AX' };
+const DUTY_SUMMARY_COL = { 'CP/PI': 'D', PC: 'E', MP: 'F', IP: 'G', SP: 'H' };
+
+function setSummaryCell(xml, ref, spec) {
+  const re = new RegExp(`<c r="${ref}"((?:\\s+[A-Za-z:]+="[^"]*")*)\\s*(?:/>|>[\\s\\S]*?</c>)`);
+  const m = re.exec(xml);
+  if (!m) return xml;
+  const st = /s="(\d+)"/.exec(m[1]);
+  const s = st ? ` s="${st[1]}"` : '';
+  let out;
+  if (!spec) out = `<c r="${ref}"${s}/>`;
+  else if (spec.text !== undefined) out = `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(spec.text)}</t></is></c>`;
+  else out = `<c r="${ref}"${s}><f>${spec.f}</f></c>`;
+  return xml.replace(m[0], () => out);
+}
+
+export function rebuildSummary(xml, aircraft) {
+  for (let k = 0; k < 8; k++) {
+    const r = 5 + k;
+    const a = aircraft[k];
+    const cells = {};
+    if (a) {
+      cells.B = { text: a.name };
+      const refs = slotDuties(k).map((d) => ({ d, ref: `'S50'!${colLetters(colNum(DUTY_FIRST_COL[d]) + k)}24` }));
+      if (a.kind === 'sim') cells.M = { f: refs.map((x) => x.ref).join('+') };
+      else for (const x of refs) cells[DUTY_SUMMARY_COL[x.d]] = { f: x.ref };
+      if (a.kind === 'single') cells.N = { f: `SUM(D${r}:H${r})` };
+      if (a.kind === 'multi') cells.O = { f: `SUM(D${r}:H${r})` };
+    }
+    for (const col of 'BCDEFGHIJKLMNO') xml = setSummaryCell(xml, `${col}${r}`, cells[col] || null);
+  }
+  return xml;
+}
+
+export async function customizeTemplate({ getText, setText }, aircraft) {
+  const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+  const slotNames = Array.from({ length: 8 }, (_, i) => aircraft[i]?.name ?? UNUSED);
+  const names = aircraft.map((a) => a.name);
+  const singles = aircraft.filter((a) => a.kind === 'single').map((a) => a.name);
+  const multis = aircraft.filter((a) => a.kind === 'multi').map((a) => a.name);
+
+  for (let n = 1; n <= MAX_PAGES; n++) {
+    const path = paths[`S${n}`];
+    if (!path) continue;
+    let x = renameFormulaNames(await getText(path), slotNames);
+    x = setFormulaText(x, 'J4', engineFormula(singles, 4));
+    x = setFormulaText(x, 'K4', engineFormula(multis, 4));
+    x = setFormulaText(x, 'K5', engineFormula(multis, 5));
+    x = retargetTypeValidation(x, names);
+    setText(path, x);
+  }
+  setText('xl/sharedStrings.xml', renameSharedStrings(await getText('xl/sharedStrings.xml'), slotNames));
+  if (paths.Summary) setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
 }
 
 // ---------- หา path ของชีตจากชื่อ ----------
@@ -129,10 +229,13 @@ export function sheetPaths(workbookXml, relsXml) {
 
 // ---------- รวมทั้งหมด ----------
 // getText(path) → Promise<string>, setText(path, string)
-export async function fillWorkbook({ getText, setText }, pages, opening) {
+export async function fillWorkbook(io, pages, opening, aircraft = null) {
+  const { getText, setText } = io;
   if (pages.length > MAX_PAGES) {
     throw new Error(`ข้อมูลเกิน ${MAX_PAGES * PAGE_SIZE} รายการ (${MAX_PAGES} ชีต) — ต้องเพิ่มชีตในแม่แบบก่อน`);
   }
+  // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์/Summary ในแม่แบบก่อนกรอก
+  if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
   for (const p of pages) {
     const path = paths[`S${p.n}`];

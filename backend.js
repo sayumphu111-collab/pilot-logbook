@@ -12,7 +12,7 @@ const stripUndefined = (o) => JSON.parse(JSON.stringify(o));
 // ---------------------------------------------------------------- โหมดในเครื่อง
 function createLocalBackend() {
   const KEY = 'pilot-logbook.local.v1';
-  let db = { flights: {}, opening: null };
+  let db = { flights: {}, opening: null, config: null };
   try { db = { ...db, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch { /* ว่าง */ }
   let cb = null;
 
@@ -23,17 +23,20 @@ function createLocalBackend() {
   const emit = () => {
     cb?.onFlights(Object.values(db.flights));
     cb?.onOpening(db.opening);
+    cb?.onConfig(db.config);
     cb?.onStatus('local');
   };
 
   return {
     mode: 'local',
-    start(callbacks) { cb = callbacks; cb.onUser({ local: true }); emit(); },
+    start(callbacks) { cb = callbacks; cb.onUser({ local: true }); emit(); cb.onSynced?.(); },
     signIn() {}, signOut() {},
     saveFlight(f) { db.flights[f.id] = stripUndefined(f); persist(); },
     saveMany(list) { for (const f of list) db.flights[f.id] = stripUndefined(f); persist(); },
     deleteFlight(id) { delete db.flights[id]; persist(); },
     saveOpening(o) { db.opening = o; persist(); },
+    saveConfig(c) { db.config = c; persist(); },
+    deleteAll() { db = { flights: {}, opening: null, config: null }; persist(); },
   };
 }
 
@@ -58,14 +61,28 @@ async function createFirebaseBackend() {
 
   const flightsCol = () => fs.collection(db, 'users', uid, 'flights');
   const openingDoc = () => fs.doc(db, 'users', uid, 'meta', 'opening');
+  const configDoc = () => fs.doc(db, 'users', uid, 'meta', 'config');
+  let serverFlights = false;
+  let serverConfig = false;
+  let notified = false;
+  // แจ้งว่าได้ข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว (ไม่ใช่แค่แคชว่างๆ) — ใช้ตัดสินว่าผู้ใช้ใหม่จริงหรือไม่
+  const checkSynced = () => { if (serverFlights && serverConfig && !notified) { notified = true; cb.onSynced?.(); } };
   const fail = (e) => cb?.onError?.(e?.message || String(e));
 
   function listen() {
     unsubs.forEach((u) => u());
     unsubs = [];
+    serverFlights = false; serverConfig = false; notified = false;
     unsubs.push(fs.onSnapshot(flightsCol(), { includeMetadataChanges: true }, (snap) => {
       cb.onFlights(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       cb.onStatus(snap.metadata.hasPendingWrites ? 'pending' : snap.metadata.fromCache ? 'offline' : 'synced');
+      if (!snap.metadata.fromCache) { serverFlights = true; checkSynced(); }
+    }, fail));
+    unsubs.push(fs.onSnapshot(configDoc(), { includeMetadataChanges: true }, (snap) => {
+      let c = null;
+      try { c = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
+      cb.onConfig(c);
+      if (!snap.metadata.fromCache) { serverConfig = true; checkSynced(); }
     }, fail));
     unsubs.push(fs.onSnapshot(openingDoc(), (snap) => {
       let o = null;
@@ -84,7 +101,7 @@ async function createFirebaseBackend() {
         uid = user?.uid || null;
         cb.onUser(user ? { email: user.email, name: user.displayName } : null);
         if (user) listen();
-        else { cb.onFlights([]); cb.onOpening(null); }
+        else { cb.onFlights([]); cb.onOpening(null); cb.onConfig(null); }
       });
     },
     async signIn() {
@@ -109,6 +126,17 @@ async function createFirebaseBackend() {
     },
     deleteFlight(id) { fs.deleteDoc(fs.doc(db, 'users', uid, 'flights', id)).catch(fail); },
     saveOpening(o) { fs.setDoc(openingDoc(), { json: JSON.stringify(o), updatedAt: stamp() }).catch(fail); },
+    saveConfig(c) { fs.setDoc(configDoc(), { json: JSON.stringify(c), updatedAt: stamp() }).catch(fail); },
+    // ลบข้อมูลทั้งหมดของผู้ใช้คนนี้ (เที่ยวบิน ยอดยกมา การตั้งค่า)
+    deleteAll(ids) {
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = fs.writeBatch(db);
+        for (const id of ids.slice(i, i + 400)) batch.delete(fs.doc(db, 'users', uid, 'flights', id));
+        batch.commit().catch(fail);
+      }
+      fs.deleteDoc(openingDoc()).catch(fail);
+      fs.deleteDoc(configDoc()).catch(fail);
+    },
   };
 }
 

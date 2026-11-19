@@ -1,10 +1,73 @@
 // logic.js — ตรรกะล้วน ไม่แตะ DOM / Firebase (ทดสอบด้วย Node ได้)
 
-export const AIRCRAFT = ['AW139', 'AW149', 'AS550', 'BELL212', 'UH1', 'H269', 'EN48', 'SIM'];
 export const DUTIES = ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
 export const MISSIONS = ['Ferry Flight', 'Training', 'Check Ride', 'Transport', 'VIP', 'SAR', 'Other'];
-export const MULTI = new Set(['AW139', 'AW149', 'BELL212']);
-export const SINGLE = new Set(['AS550', 'UH1', 'H269', 'EN48']);
+
+// ---------- รายการแบบอากาศยาน (ผู้ใช้กำหนดเองได้ สูงสุด 8 แบบ = จำนวนช่องในแม่แบบ Excel) ----------
+// kind: single = เครื่องยนต์เดียว, multi = หลายเครื่องยนต์, sim = เครื่องฝึกบินจำลอง
+export const MAX_AIRCRAFT = 8;
+export const KIND_LABEL = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกจำลอง (SIM)' };
+export const KIND_SHORT = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกจำลอง' };
+export const DEFAULT_AIRCRAFT = [
+  { name: 'AW139', kind: 'multi' },
+  { name: 'AW149', kind: 'multi' },
+  { name: 'AS550', kind: 'single' },
+  { name: 'BELL212', kind: 'multi' },
+  { name: 'UH1', kind: 'single' },
+  { name: 'H269', kind: 'single' },
+  { name: 'EN48', kind: 'single' },
+  { name: 'SIM', kind: 'sim' },
+];
+// อ็อบเจกต์ชุดนี้ถูกแก้ในที่เดิม (ผู้ที่ import ไปเห็นค่าล่าสุดเสมอ)
+export const AIRCRAFT = [];
+export const SINGLE = new Set();
+export const MULTI = new Set();
+export const SIMS = new Set();
+
+export function setAircraft(list) {
+  AIRCRAFT.length = 0; SINGLE.clear(); MULTI.clear(); SIMS.clear();
+  for (const a of list) {
+    AIRCRAFT.push(a.name);
+    (a.kind === 'multi' ? MULTI : a.kind === 'sim' ? SIMS : SINGLE).add(a.name);
+  }
+}
+export const kindOf = (name) => (MULTI.has(name) ? 'multi' : SIMS.has(name) ? 'sim' : 'single');
+export const getAircraft = () => AIRCRAFT.map((name) => ({ name, kind: kindOf(name) }));
+export const sameAircraft = (a, b) => a.length === b.length && a.every((x, i) => x.name === b[i].name && x.kind === b[i].kind);
+export const isDefaultAircraft = (list) => sameAircraft(list, DEFAULT_AIRCRAFT);
+setAircraft(DEFAULT_AIRCRAFT);
+
+export const NAME_RE = /^[A-Z0-9][A-Z0-9 ._\/-]{0,11}$/;
+export function validateAircraft(list) {
+  if (!list.length) return 'ต้องมีแบบอากาศยานอย่างน้อย 1 แบบ';
+  if (list.length > MAX_AIRCRAFT) return `ใส่ได้สูงสุด ${MAX_AIRCRAFT} แบบ (ตามจำนวนช่องในไฟล์ Excel)`;
+  const seen = new Set();
+  for (const a of list) {
+    if (!a.name) return 'มีแถวที่ยังไม่ได้ใส่ชื่อ';
+    if (!NAME_RE.test(a.name)) return `ชื่อ “${a.name}” ใช้ไม่ได้ — ใช้ตัวอักษร A–Z ตัวเลข และ - . / เว้นวรรค ได้ไม่เกิน 12 ตัว`;
+    if (seen.has(a.name)) return `ชื่อ “${a.name}” ซ้ำกัน`;
+    seen.add(a.name);
+    if (!['single', 'multi', 'sim'].includes(a.kind)) return `เลือกชนิดเครื่องยนต์ของ ${a.name}`;
+  }
+  return '';
+}
+
+// ในไฟล์ Excel: ช่อง (ลำดับ) ที่ i มีคอลัมน์ "แบบ × หน้าที่" ให้หน้าที่ใดบ้าง
+export function slotDuties(i) {
+  if (i < 5) return ['CP/PI', 'PC', 'MP', 'IP', 'SP'];
+  if (i === 5) return ['CP/PI', 'PC'];
+  return ['CP/PI'];
+}
+// เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ยังนับในชั่วโมงรวมตามปกติ)
+export function coverageGaps(flights) {
+  let n = 0;
+  for (const f of flights) {
+    const i = AIRCRAFT.indexOf(f.type);
+    if (i < 0 || !slotDuties(i).includes(f.duty)) n++;
+  }
+  return n;
+}
+
 export const PAGE_SIZE = 18;
 
 // ช่อง "สภาพการบิน" ที่เก็บเป็นชั่วโมง
@@ -35,7 +98,7 @@ export function addFlight(t, f) {
   t.hours += h;
   if (SINGLE.has(f.type)) t.single += h;
   if (MULTI.has(f.type)) t.multi += h;
-  if (f.type === 'SIM') t.sim += h;
+  if (SIMS.has(f.type)) t.sim += h;
   for (const c of CONDS) t[c.key] += num(f[c.key]);
   t.byType[f.type] = (t.byType[f.type] || 0) + h;
   const k = `${f.type}|${f.duty}`;
@@ -56,26 +119,47 @@ export function addTotals(a, b) {
 // ยอดยกมา (Opening balance) = ค่าที่พิมพ์ไว้ใน "Total Last Page" ของชีต S1
 // แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BB=แบบ x หน้าที่
 const DUTY_BLOCKS = [
-  ['CP/PI', 25, AIRCRAFT.length],
+  ['CP/PI', 25, 8],
   ['PC', 33, 6],
   ['MP', 39, 5],
   ['IP', 44, 5],
   ['SP', 49, 5],
 ];
-export function parseOpening(row) {
+// names = ชื่อแบบของแต่ละช่องในไฟล์ (ค่าเริ่มต้น = รายการปัจจุบัน)
+export function parseOpening(row, names = AIRCRAFT) {
   const t = emptyTotals();
   const n = (i) => num(row[i]);
   t.hours = n(8); t.single = n(9); t.multi = n(10);
-  AIRCRAFT.forEach((a, i) => { if (n(11 + i)) t.byType[a] = n(11 + i); });
+  names.forEach((a, i) => { if (a && i < 8 && n(11 + i)) t.byType[a] = n(11 + i); });
   t.xc = n(19); t.nightUn = n(20); t.nvg = n(21); t.ifr = n(22); t.imc = n(23);
-  t.sim = t.byType.SIM || 0;
   for (const [duty, start, count] of DUTY_BLOCKS) {
     for (let i = 0; i < count; i++) {
       const v = n(start + i);
-      if (v) t.byTypeDuty[`${AIRCRAFT[i]}|${duty}`] = v;
+      if (v && names[i]) t.byTypeDuty[`${names[i]}|${duty}`] = v;
     }
   }
+  t.sim = Object.entries(t.byType).reduce((a, [k, v]) => a + (SIMS.has(k) ? v : 0), 0);
   return t;
+}
+
+// เดาชนิดเครื่องยนต์จากชื่อ (ใช้เมื่อไม่มีข้อมูลอื่น)
+export const guessKind = (name) => (/^(SIM|FFS|FTD|FNPT)/i.test(name) ? 'sim' : 'single');
+
+// ชื่อแบบอากาศยานของแต่ละช่อง (8 ช่อง) จากหัวคอลัมน์ L3:S3 ของชีตแรกในไฟล์ Excel (ช่องว่าง = '')
+// ws = อ็อบเจกต์ชีตของ SheetJS (เข้าถึงด้วยชื่อเซลล์ เช่น ws.L3.v, ws.J4.f)
+export function sheetSlotNames(ws) {
+  return ['L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'].map((c) => String(ws?.[`${c}3`]?.v ?? '').trim().toUpperCase());
+}
+
+// รายการแบบอากาศยานในไฟล์ + ชนิดเครื่องยนต์ (อ่านจากสูตรช่อง Single/Multi)
+export function sheetAircraft(ws) {
+  const quoted = (f) => [...String(f || '').matchAll(/"([^"]+)"/g)].map((m) => m[1].trim().toUpperCase());
+  const single = new Set(quoted(ws?.J4?.f));
+  const multi = new Set([...quoted(ws?.K4?.f), ...quoted(ws?.K5?.f)]);
+  return sheetSlotNames(ws).filter(Boolean).map((name) => ({
+    name,
+    kind: multi.has(name) ? 'multi' : single.has(name) ? 'single' : guessKind(name),
+  }));
 }
 
 export function sumFlights(list) {

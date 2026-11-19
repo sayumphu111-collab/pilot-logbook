@@ -5,17 +5,17 @@ import { fillWorkbook, MAX_PAGES } from './xlsxfill.js';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const state = { flights: [], opening: null, user: undefined, status: '', editing: null, view: 'add' };
+const state = { flights: [], opening: null, config: null, user: undefined, status: '', editing: null, view: 'add', synced: false, welcome: false, wstep: 0, welcomeChecked: false, recheckWelcome: false };
 let backend = null;
 let toastTimer = 0;
 
 // ---------------------------------------------------------------- ตัวช่วย
-function toast(msg) {
+function toast(msg, ms = 3200) {
   const t = $('#toast');
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 3200);
+  toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
 
 const sortedFlights = () => L.sortFlights(state.flights);
@@ -79,19 +79,33 @@ const LS = {
 const SHORT = { xc: 'XC', nightUn: 'Night', nvg: 'NVG', ifr: 'IFR', imc: 'IMC' };
 
 // ชิปแทน dropdown (แตะง่ายบนมือถือ/ไอแพด) — ยังเก็บค่าใน <select> ที่ซ่อนไว้
-function buildChips(boxSel, selSel, values) {
+function renderChips(boxSel, selSel, values, extra = null) {
+  const all = extra && !values.includes(extra) ? [...values, extra] : values;
   const sel = $(selSel);
-  const box = $(boxSel);
-  sel.innerHTML = values.map((v) => `<option>${esc(v)}</option>`).join('');
-  box.innerHTML = values.map((v) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(v)}">${esc(v)}</button>`).join('');
-  box.addEventListener('click', (e) => {
+  const cur = sel.value;
+  sel.innerHTML = all.map((v) => `<option>${esc(v)}</option>`).join('');
+  $(boxSel).innerHTML = all.map((v) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(v)}">${esc(v)}</button>`).join('');
+  if (all.includes(cur)) sel.value = cur;
+}
+
+function wireChips(boxSel, selSel) {
+  $(boxSel).addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
     if (!b) return;
-    sel.value = b.dataset.v;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    $(selSel).value = b.dataset.v;
+    $(selSel).dispatchEvent(new Event('change', { bubbles: true }));
     syncChips();
   });
 }
+
+// รายการแบบอากาศยานเปลี่ยนได้ → วาดชิปใหม่ (extra = แบบของเที่ยวบินเก่าที่กำลังแก้ ซึ่งไม่อยู่ในรายการแล้ว)
+function renderTypeChips(extra = null) {
+  renderChips('#chips-type', '#f-type', L.AIRCRAFT, extra);
+  syncChips();
+}
+
+const TYPE_COLORS = ['#2f7f6d', '#2c6ea6', '#b8693a', '#8a5ca8', '#7f8f34', '#b08a2e', '#aa4f62', '#6c7380'];
+const typeColor = (name) => { const i = L.AIRCRAFT.indexOf(name); return i >= 0 ? TYPE_COLORS[i % TYPE_COLORS.length] : '#6c7380'; };
 
 function syncChips() {
   for (const [box, sel] of [['#chips-type', '#f-type'], ['#chips-duty', '#f-duty']]) {
@@ -126,8 +140,10 @@ function syncAutoConds() {
 }
 
 function initForm() {
-  buildChips('#chips-type', '#f-type', L.AIRCRAFT);
-  buildChips('#chips-duty', '#f-duty', L.DUTIES);
+  renderChips('#chips-type', '#f-type', L.AIRCRAFT);
+  renderChips('#chips-duty', '#f-duty', L.DUTIES);
+  wireChips('#chips-type', '#f-type');
+  wireChips('#chips-duty', '#f-duty');
   $('#conds').innerHTML = L.CONDS.map((c) => `
     <div class="cond" data-key="${c.key}">
       <button type="button" class="chip cond-chip" aria-pressed="false">${c.label}</button>
@@ -160,6 +176,7 @@ function initForm() {
 }
 
 function resetForm(keep = {}) {
+  renderTypeChips();
   $('#f-date').value = keep.date || L.todayISO();
   $('#f-type').value = L.AIRCRAFT.includes(keep.type) ? keep.type : L.AIRCRAFT[0];
   const nums = LS.get('lb.nums', {});
@@ -242,7 +259,8 @@ function startEdit(id) {
   state.editing = id;
   $('#form-title').textContent = `แก้ไขเที่ยวบิน · ${L.dmy(f.date)}`;
   $('#f-date').value = f.date;
-  $('#f-type').value = L.AIRCRAFT.includes(f.type) ? f.type : L.AIRCRAFT[0];
+  renderTypeChips(f.type);
+  $('#f-type').value = f.type;
   $('#f-number').value = f.number || '';
   $('#f-duty').value = L.DUTIES.includes(f.duty) ? f.duty : L.DUTIES[0];
   $('#f-dep').value = f.dep || '';
@@ -298,7 +316,7 @@ function flightRow(f, no) {
   const route = [f.dep, f.dest].filter(Boolean).join(' → ');
   const minis = L.CONDS.filter((c) => L.num(f[c.key]) > 0).map((c) => `<span class="mini">${SHORT[c.key]}</span>`).join('');
   const meta = [f.mission, f.note].filter(Boolean).map(esc).join(' · ');
-  return `<button class="flight" data-id="${esc(f.id)}" data-type="${esc(f.type)}">
+  return `<button class="flight" data-id="${esc(f.id)}" data-type="${esc(f.type)}" style="--t:${typeColor(f.type)}">
     <span class="f-main">
       <span class="f-top"><span class="f-no">#${no}</span><span>${L.dmy(f.date)}</span><span class="f-type">${esc(f.type)}${f.number ? ' ' + esc(f.number) : ''}</span><span class="tag">${esc(f.duty)}</span></span>
       ${route ? `<span class="f-route">${esc(route)}</span>` : ''}
@@ -358,7 +376,7 @@ function renderSummary() {
   const stat = (label, v) => `<div class="stat"><b>${L.fmt(v)}</b><span>${label}</span></div>`;
 
   const maxH = Math.max(1, ...types.map((ty) => t.byType[ty]));
-  const bars = types.map((ty) => `<div class="bar-row" data-type="${esc(ty)}"><span>${esc(ty)}</span><div class="bar"><i style="width:${((t.byType[ty] / maxH) * 100).toFixed(1)}%"></i></div><b>${L.fmt(t.byType[ty])}</b></div>`).join('');
+  const bars = types.map((ty) => `<div class="bar-row" data-type="${esc(ty)}" style="--t:${typeColor(ty)}"><span>${esc(ty)}</span><div class="bar"><i style="width:${((t.byType[ty] / maxH) * 100).toFixed(1)}%"></i></div><b>${L.fmt(t.byType[ty])}</b></div>`).join('');
 
   $('#summary').innerHTML = `
     <section class="card"><h2>สัดส่วนตามแบบอากาศยาน</h2>${bars || '<p class="muted">ยังไม่มีข้อมูล</p>'}</section>
@@ -380,7 +398,12 @@ function renderSummary() {
 }
 
 // ---------------------------------------------------------------- ตั้งค่า
+function renderAircraftSummary() {
+  $('#ac-summary').innerHTML = L.AIRCRAFT.map((n) => `<span class="pill" style="--t:${typeColor(n)}"><i></i>${esc(n)} <small>${L.KIND_SHORT[L.kindOf(n)]}</small></span>`).join('');
+}
+
 function renderSettings() {
+  renderAircraftSummary();
   const u = state.user;
   $('#account-info').textContent = !firebaseReady
     ? 'โหมดในเครื่อง: ข้อมูลอยู่ในเบราว์เซอร์เครื่องนี้เท่านั้น ยังไม่ซิงค์ข้ามอุปกรณ์ (ตั้งค่า Firebase ตามคู่มือใน README)'
@@ -430,6 +453,211 @@ function saveOpeningFromDialog() {
   toast('บันทึกยอดยกมาแล้ว');
 }
 
+// ----- แบบอากาศยานของฉัน
+let acDraft = []; // [{ name, kind, orig }]  orig = ชื่อเดิม (ใช้ตามรอยการเปลี่ยนชื่อ)
+
+function renderAcRows() {
+  const kinds = Object.entries(L.KIND_SHORT);
+  $('#ac-rows').innerHTML = acDraft.map((a, i) => `
+    <div class="ac-row" data-i="${i}">
+      <span class="ac-no">${i + 1}</span>
+      <input class="ac-name" value="${esc(a.name)}" maxlength="12" placeholder="เช่น AW139" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="ชื่อแบบอากาศยานลำดับที่ ${i + 1}">
+      <div class="ac-sub">
+        <select class="ac-kind" aria-label="ชนิดเครื่องยนต์">${kinds.map(([k, label]) => `<option value="${k}"${a.kind === k ? ' selected' : ''}>${label}</option>`).join('')}</select>
+        <button type="button" class="ic" data-act="up" aria-label="เลื่อนขึ้น"${i === 0 ? ' disabled' : ''}>▲</button>
+        <button type="button" class="ic" data-act="down" aria-label="เลื่อนลง"${i === acDraft.length - 1 ? ' disabled' : ''}>▼</button>
+        <button type="button" class="ic del" data-act="del" aria-label="ลบแถวนี้">✕</button>
+      </div>
+      <div class="ac-note">ไฟล์ Excel รองรับหน้าที่: ${L.slotDuties(i).join(', ')}</div>
+    </div>`).join('');
+  $('#ac-add').disabled = acDraft.length >= L.MAX_AIRCRAFT;
+}
+
+function syncAcDraft() {
+  document.querySelectorAll('#ac-rows .ac-row').forEach((row, i) => {
+    if (!acDraft[i]) return;
+    acDraft[i].name = row.querySelector('.ac-name').value.trim().toUpperCase();
+    acDraft[i].kind = row.querySelector('.ac-kind').value;
+  });
+}
+
+function openAircraftDialog() {
+  acDraft = L.getAircraft().map((a) => ({ ...a, orig: a.name }));
+  renderAcRows();
+  $('#ac-error').hidden = true;
+  $('#dlg-aircraft').returnValue = '';
+  $('#dlg-aircraft').showModal();
+}
+
+// ชื่อแบบที่ยังถูกใช้อยู่ (เที่ยวบิน/ยอดยกมา) → ห้ามลบ
+function usedAircraftCount(name) {
+  let n = state.flights.filter((f) => f.type === name).length;
+  if (state.opening && L.num(state.opening.byType?.[name]) > 0) n += 1;
+  return n;
+}
+
+function commitAircraft(list, renames) {
+  if (renames.size) {
+    const map = (t) => renames.get(t) ?? t;
+    const changed = state.flights.filter((f) => renames.has(f.type)).map((f) => ({ ...f, type: map(f.type) }));
+    if (changed.length) backend.saveMany(changed);
+    if (state.opening) {
+      const o = { ...state.opening, byType: {}, byTypeDuty: {} };
+      for (const [k, v] of Object.entries(state.opening.byType || {})) o.byType[map(k)] = (o.byType[map(k)] || 0) + v;
+      for (const [k, v] of Object.entries(state.opening.byTypeDuty || {})) {
+        const [ty, d] = k.split('|');
+        const nk = `${map(ty)}|${d}`;
+        o.byTypeDuty[nk] = (o.byTypeDuty[nk] || 0) + v;
+      }
+      backend.saveOpening(o);
+    }
+  }
+  backend.saveConfig({ v: 1, aircraft: list });
+  toast('บันทึกรายการแบบอากาศยานแล้ว');
+}
+
+function initAircraftEditor() {
+  $('#btn-aircraft').addEventListener('click', openAircraftDialog);
+  $('#ac-add').addEventListener('click', () => {
+    syncAcDraft();
+    if (acDraft.length >= L.MAX_AIRCRAFT) return;
+    acDraft.push({ name: '', kind: 'single', orig: null });
+    renderAcRows();
+    document.querySelectorAll('#ac-rows .ac-name')[acDraft.length - 1]?.focus();
+  });
+  $('#ac-default').addEventListener('click', () => {
+    const cur = new Set(L.AIRCRAFT);
+    acDraft = L.DEFAULT_AIRCRAFT.map((a) => ({ ...a, orig: cur.has(a.name) ? a.name : null }));
+    renderAcRows();
+  });
+  $('#ac-clear').addEventListener('click', () => {
+    syncAcDraft();
+    acDraft = [{ name: '', kind: 'single', orig: null }];
+    renderAcRows();
+  });
+  $('#ac-rows').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    syncAcDraft();
+    const i = Number(b.closest('.ac-row').dataset.i);
+    if (b.dataset.act === 'del') acDraft.splice(i, 1);
+    else if (b.dataset.act === 'up' && i > 0) [acDraft[i - 1], acDraft[i]] = [acDraft[i], acDraft[i - 1]];
+    else if (b.dataset.act === 'down' && i < acDraft.length - 1) [acDraft[i + 1], acDraft[i]] = [acDraft[i], acDraft[i + 1]];
+    renderAcRows();
+  });
+  $('#form-aircraft').addEventListener('submit', (e) => {
+    if (e.submitter && e.submitter.value !== 'save') return; // ยกเลิก → ปิดตามปกติ
+    syncAcDraft();
+    const list = acDraft.map(({ name, kind }) => ({ name, kind }));
+    let err = L.validateAircraft(list);
+    const renames = new Map();
+    if (!err) {
+      const kept = new Set(acDraft.filter((a) => a.orig).map((a) => a.orig));
+      for (const cur of L.AIRCRAFT) {
+        const n = usedAircraftCount(cur);
+        if (!kept.has(cur) && n) { err = `แบบ ${cur} ยังมีข้อมูลอยู่ (${n > 1 || state.flights.some((f) => f.type === cur) ? 'เที่ยวบิน/ยอดยกมา' : 'ยอดยกมา'}) จึงลบไม่ได้ ให้เปลี่ยนชื่อในแถวเดิมแทน`; break; }
+      }
+      for (const a of acDraft) if (a.orig && a.orig !== a.name) renames.set(a.orig, a.name);
+    }
+    if (err) { e.preventDefault(); $('#ac-error').textContent = err; $('#ac-error').hidden = false; return; }
+    commitAircraft(list, renames);
+  });
+}
+
+function applyConfig(cfg) {
+  state.config = cfg;
+  const list = cfg?.aircraft && !L.validateAircraft(cfg.aircraft) ? cfg.aircraft : L.DEFAULT_AIRCRAFT;
+  L.setAircraft(list);
+  const editing = state.editing ? state.flights.find((x) => x.id === state.editing) : null;
+  renderTypeChips(editing?.type || null);
+  renderCurrent();
+}
+
+// ----- ต้อนรับผู้ใช้ใหม่
+function maybeWelcome() {
+  if (state.welcome || !state.synced || !state.user) return;
+  if (state.welcomeChecked && !state.recheckWelcome) return;
+  const empty = !state.config && !state.flights.length && !state.opening?.hours;
+  if (!empty) { if (!state.recheckWelcome) state.welcomeChecked = true; return; }
+  state.welcomeChecked = true;
+  state.recheckWelcome = false;
+  state.welcome = true;
+  state.wstep = 0;
+  showView(state.view);
+}
+
+function renderWelcome() {
+  const step = state.wstep;
+  $('#w-dots').innerHTML = [0, 1, 2].map((i) => `<i class="${i === step ? 'on' : ''}"></i>`).join('');
+  let html = '';
+  if (step === 0) {
+    html = `
+      <h1>ยินดีต้อนรับ</h1>
+      <p class="lead">สมุดบันทึกชั่วโมงบินส่วนตัวของคุณ</p>
+      <ul class="bul">
+        <li>กรอกเที่ยวบินได้เร็วบนมือถือ ไอแพด และคอมพิวเตอร์ ยอดรวมและยอดสะสมคำนวณให้เอง</li>
+        <li>ข้อมูลซิงค์ข้ามอุปกรณ์ และใช้ออฟไลน์ได้</li>
+        <li>ส่งออกเป็นไฟล์ Excel ตามรูปแบบสมุดล็อกบุ๊กได้</li>
+      </ul>
+      <div class="callout"><b>ความเป็นส่วนตัวของคุณ</b>
+        ข้อมูลล็อกบุ๊กเห็นได้เฉพาะบัญชี Google ของคุณผ่านแอปนี้ แต่ผู้ดูแลระบบมีสิทธิ์ทางเทคนิคเปิดดูฐานข้อมูลได้ จึงควรเลี่ยงการใส่ข้อมูลลับของหน่วยในช่องภารกิจและหมายเหตุ คุณส่งออกหรือลบข้อมูลทั้งหมดได้ด้วยตัวเอง
+        <button type="button" class="linkbtn" data-open="privacy">อ่านรายละเอียด</button></div>
+      <div class="w-actions"><button class="btn primary block" data-w="next">เริ่มตั้งค่า</button></div>`;
+  } else if (step === 1) {
+    html = `
+      <h1>แบบอากาศยานของคุณ</h1>
+      <p class="lead">เลือกแบบที่คุณบิน (สูงสุด ${L.MAX_AIRCRAFT} แบบ) แก้ภายหลังได้</p>
+      <div class="chips-static">${L.AIRCRAFT.map((n) => `<span class="pill" style="--t:${typeColor(n)}"><i></i>${esc(n)} <small>${L.KIND_SHORT[L.kindOf(n)]}</small></span>`).join('')}</div>
+      <p class="muted small">รายการเริ่มต้นเป็นชุดจากสมุดต้นแบบ ถ้าคุณบินแบบอื่น กด “แก้ไขรายการ” เพื่อเปลี่ยนชื่อหรือชนิดเครื่องยนต์ ลำดับมีผลกับไฟล์ Excel: ใส่แบบที่บินบ่อยและมีหลายหน้าที่ไว้ลำดับต้น</p>
+      <div class="w-actions">
+        <button class="btn block" data-w="edit">แก้ไขรายการแบบอากาศยาน</button>
+        <div class="w-actions row"><button class="btn" data-w="back">ย้อนกลับ</button><button class="btn primary" data-w="next">ถัดไป</button></div>
+      </div>`;
+  } else {
+    html = `
+      <h1>พร้อมเริ่มแล้ว</h1>
+      <p class="lead">คุณมีชั่วโมงบินสะสมอยู่แล้วหรือไม่?</p>
+      <div class="w-actions">
+        <button class="btn w-choice" data-w="import">นำเข้าจากไฟล์ Excel<small>ไฟล์สมุดล็อกบุ๊กรูปแบบเดียวกับต้นแบบ ระบบดึงเที่ยวบินและยอดยกมาให้</small></button>
+        <button class="btn w-choice" data-w="opening">ตั้งยอดยกมาเอง<small>พิมพ์ชั่วโมงสะสมก่อนใช้แอป ตามแบบ × หน้าที่</small></button>
+        <button class="btn primary w-choice" data-w="start">เริ่มบันทึกเที่ยวบินแรก<small>ไม่มียอดสะสม หรือจะตั้งภายหลังก็ได้</small></button>
+      </div>
+      <p class="muted small center" style="margin-top:14px">ดูวิธีใช้ได้ทุกเมื่อที่แท็บ “วิธีใช้”</p>
+      <div class="w-actions row" style="margin-top:6px"><button class="btn" data-w="back">ย้อนกลับ</button><span></span></div>`;
+  }
+  $('#w-body').innerHTML = html;
+}
+
+function finishWelcome(next) {
+  state.welcome = false;
+  if (!state.config) backend.saveConfig({ v: 1, aircraft: L.getAircraft() }); // จดว่าตั้งค่าแล้ว จะไม่แสดงหน้าต้อนรับอีก
+  if (next === 'import') { showView('settings'); $('#file-xlsx').click(); }
+  else if (next === 'opening') { showView('settings'); openOpeningDialog(); }
+  else showView('add');
+}
+
+function initWelcome() {
+  $('#w-body').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-w]');
+    if (!b) return;
+    const a = b.dataset.w;
+    if (a === 'next') { state.wstep = Math.min(2, state.wstep + 1); renderWelcome(); }
+    else if (a === 'back') { state.wstep = Math.max(0, state.wstep - 1); renderWelcome(); }
+    else if (a === 'edit') openAircraftDialog();
+    else finishWelcome(a);
+  });
+}
+
+// ----- ลบข้อมูลทั้งหมดของฉัน
+function deleteAllMyData() {
+  if (!confirm('ลบข้อมูลทั้งหมดของคุณถาวร (เที่ยวบิน ยอดยกมา และรายการแบบอากาศยาน) กู้คืนไม่ได้\n\nแนะนำให้ส่งออก Excel หรือสำรอง JSON ไว้ก่อน\n\nดำเนินการต่อไหม?')) return;
+  const word = prompt('พิมพ์คำว่า ลบ เพื่อยืนยัน');
+  if ((word || '').trim() !== 'ลบ') { toast('ยกเลิกการลบ'); return; }
+  state.recheckWelcome = true;
+  backend.deleteAll(state.flights.map((f) => f.id));
+  toast('ลบข้อมูลทั้งหมดแล้ว');
+}
+
 // ----- เรียงตามวันที่
 function renderOrderInfo() {
   const n = L.countOutOfOrder(sortedFlights());
@@ -460,20 +688,45 @@ async function importXlsx(file) {
     const incoming = [];
     let opening = null;
     let ord = 0;
+    let slotNames = [];
+    let fileList = [];
     names.forEach((n, idx) => {
       const ws = wb.Sheets[n];
       const r = XLSX.utils.decode_range(ws['!ref'] || 'A1');
       if (r.s.r || r.s.c) ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: r.e });
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-      if (idx === 0 && rows[22]) {
-        const o = L.parseOpening(rows[22]);
-        if (o.hours > 0) opening = o;
+      if (idx === 0) {
+        slotNames = L.sheetSlotNames(ws);
+        fileList = L.sheetAircraft(ws);
+        if (rows[22]) {
+          const o = L.parseOpening(rows[22], slotNames.some(Boolean) ? slotNames : L.AIRCRAFT);
+          if (o.hours > 0) opening = o;
+        }
       }
       for (let i = 3; i < rows.length; i++) {
         const f = L.rowToFlight(rows[i]);
         if (f) { f.id = crypto.randomUUID(); f.ord = ord++; incoming.push(f); }
       }
     });
+
+    // แบบอากาศยานในไฟล์ เทียบกับรายการของคุณ
+    let newList = null;
+    const noData = !state.flights.length && !state.opening?.hours;
+    const label = (l) => l.map((a) => a.name).join(', ');
+    if (noData && fileList.length && !L.sameAircraft(fileList, L.getAircraft())
+      && confirm(`ไฟล์นี้ใช้แบบอากาศยาน: ${label(fileList)}\n\nตั้งเป็นรายการแบบอากาศยานของคุณไหม?\n(ถ้ากดยกเลิก จะใช้รายการปัจจุบัน: ${label(L.getAircraft())})`)) newList = fileList;
+    const base = newList ?? L.getAircraft();
+    const usedTypes = new Set(incoming.map((f) => f.type));
+    if (opening) Object.keys(opening.byType).forEach((k) => usedTypes.add(k));
+    const unknown = [...usedTypes].filter((t) => !base.some((a) => a.name === t));
+    if (unknown.length) {
+      if (base.length + unknown.length > L.MAX_AIRCRAFT) {
+        alert(`ไฟล์มีแบบอากาศยานที่ไม่อยู่ในรายการของคุณ: ${unknown.join(', ')}\n\nรายการเต็มแล้ว (สูงสุด ${L.MAX_AIRCRAFT} แบบ) กรุณาแก้รายการที่ ตั้งค่า → แบบอากาศยานของฉัน หรือแก้ชื่อในไฟล์ แล้วนำเข้าใหม่`);
+        return;
+      }
+      if (!confirm(`ไฟล์มีแบบอากาศยานที่ยังไม่มีในรายการ: ${unknown.join(', ')}\n\nเพิ่มเข้ารายการให้ไหม? (ตั้งชนิดเครื่องยนต์ให้เดาเอง ปรับได้ที่ ตั้งค่า → แบบอากาศยานของฉัน)`)) return;
+      newList = [...base, ...unknown.map((name) => ({ name, kind: L.guessKind(name) }))];
+    }
 
     const fresh = L.filterNew(state.flights, incoming);
     const skipped = incoming.length - fresh.length;
@@ -482,6 +735,7 @@ async function importXlsx(file) {
     if (!fresh.length && !opening) { toast('ไม่มีข้อมูลใหม่ให้นำเข้า'); return; }
     if (!confirm(`${lines.join('\n')}\n\nนำเข้าเลยไหม?`)) return;
 
+    if (newList) backend.saveConfig({ v: 1, aircraft: newList });
     if (fresh.length) backend.saveMany(fresh);
     if (opening && (!state.opening?.hours || confirm(`มียอดยกมาอยู่แล้ว (${L.fmt(state.opening.hours)} ชม.)\nแทนที่ด้วยยอดจากไฟล์ (${L.fmt(opening.hours)} ชม.) ไหม?`))) {
       backend.saveOpening(opening);
@@ -508,10 +762,13 @@ async function exportXlsx() {
     await fillWorkbook({
       getText: async (p) => text.get(p) ?? (await zip.file(p).async('string')),
       setText: (p, t) => { text.set(p, t); zip.file(p, t); },
-    }, pages, state.opening);
+    }, pages, state.opening, L.getAircraft());
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     download(`Pilot_Logbook_${L.todayISO()}.xlsx`, blob);
-    toast('ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets');
+    const gaps = L.coverageGaps(sorted);
+    toast(gaps
+      ? `ส่งออกแล้ว · มี ${gaps} เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับในไฟล์ Excel (ยังนับในชั่วโมงรวมแล้ว)`
+      : 'ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets', gaps ? 6500 : 3200);
   } catch (e) {
     toast(e.message || 'ส่งออกไม่สำเร็จ');
   } finally {
@@ -520,7 +777,7 @@ async function exportXlsx() {
 }
 
 function exportJson() {
-  const data = { app: 'pilot-logbook', version: 1, exportedAt: new Date().toISOString(), opening: state.opening, flights: sortedFlights() };
+  const data = { app: 'pilot-logbook', version: 1, exportedAt: new Date().toISOString(), opening: state.opening, aircraft: L.getAircraft(), flights: sortedFlights() };
   download(`pilot-logbook-backup-${L.todayISO()}.json`, new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
 }
 
@@ -529,7 +786,9 @@ async function importJson(file) {
     const data = JSON.parse(await file.text());
     if (data.app !== 'pilot-logbook' || !Array.isArray(data.flights)) throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอป');
     const flights = data.flights.filter((f) => f && f.id && f.date && f.type);
-    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${data.opening ? ' และยอดยกมา' : ''}?\nรายการที่มีอยู่แล้วจะถูกอัปเดต ไม่ซ้ำซ้อน`)) return;
+    const aircraft = data.aircraft && !L.validateAircraft(data.aircraft) ? data.aircraft : null;
+    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${data.opening ? ' และยอดยกมา' : ''}${aircraft ? ' และรายการแบบอากาศยาน (แทนที่รายการปัจจุบัน)' : ''}?\nรายการที่มีอยู่แล้วจะถูกอัปเดต ไม่ซ้ำซ้อน`)) return;
+    if (aircraft) backend.saveConfig({ v: 1, aircraft });
     backend.saveMany(flights);
     if (data.opening) backend.saveOpening(data.opening);
     toast('กู้คืนข้อมูลแล้ว');
@@ -543,9 +802,9 @@ function showView(name) {
   state.view = name;
   const pending = firebaseReady && state.user === undefined; // ยังรอผลตรวจการเข้าสู่ระบบ
   const loggedOut = firebaseReady && state.user === null;
-  const target = loggedOut ? 'login' : name;
-  for (const v of ['login', 'add', 'list', 'summary', 'settings']) $(`#view-${v}`).hidden = pending || v !== target;
-  $('#tabs').hidden = pending || loggedOut;
+  const target = loggedOut ? 'login' : state.welcome ? 'welcome' : name;
+  for (const v of ['login', 'welcome', 'add', 'list', 'summary', 'settings', 'help']) $(`#view-${v}`).hidden = pending || v !== target;
+  $('#tabs').hidden = pending || loggedOut || state.welcome;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
   renderCurrent();
   window.scrollTo(0, 0);
@@ -553,7 +812,8 @@ function showView(name) {
 
 function renderCurrent() {
   renderHeader();
-  if (state.view === 'add') renderRecent();
+  if (state.welcome) renderWelcome();
+  else if (state.view === 'add') renderRecent();
   else if (state.view === 'list') renderList();
   else if (state.view === 'summary') renderSummary();
   else if (state.view === 'settings') { renderSettings(); renderOrderInfo(); }
@@ -601,6 +861,8 @@ function initTheme() {
 async function main() {
   initForm();
   initTheme();
+  initAircraftEditor();
+  initWelcome();
 
   document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
   document.addEventListener('click', (e) => {
@@ -615,6 +877,10 @@ async function main() {
   $('#btn-export-xlsx').addEventListener('click', exportXlsx);
   $('#btn-export-json').addEventListener('click', exportJson);
   $('#btn-sort').addEventListener('click', sortByDate);
+  $('#btn-delete-all').addEventListener('click', deleteAllMyData);
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-open="privacy"]')) $('#dlg-privacy').showModal();
+  });
   $('#file-xlsx').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importXlsx(f); });
   $('#file-json').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importJson(f); });
 
@@ -627,9 +893,15 @@ async function main() {
   }
 
   backend.start({
-    onFlights(list) { state.flights = list; refreshSuggestions(); renderCurrent(); },
-    onOpening(o) { state.opening = o; renderCurrent(); },
-    onUser(u) { state.user = u; showView(state.view); },
+    onFlights(list) { state.flights = list; refreshSuggestions(); renderCurrent(); maybeWelcome(); },
+    onOpening(o) { state.opening = o; renderCurrent(); maybeWelcome(); },
+    onConfig(c) { applyConfig(c); maybeWelcome(); },
+    onSynced() { state.synced = true; maybeWelcome(); },
+    onUser(u) {
+      state.user = u;
+      if (!u) { state.synced = false; state.welcome = false; state.welcomeChecked = false; }
+      showView(state.view);
+    },
     onStatus(s) { state.status = s; renderHeader(); },
     onError(msg) { toast(msg); },
   });
