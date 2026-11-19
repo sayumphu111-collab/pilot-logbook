@@ -1,7 +1,8 @@
 // logic.js — ตรรกะล้วน ไม่แตะ DOM / Firebase (ทดสอบด้วย Node ได้)
 
 export const DUTIES = ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
-export const MISSIONS = ['Ferry Flight', 'Training', 'Check Ride', 'Transport', 'VIP', 'SAR', 'Other'];
+// ชุดเดียวกับรายการเลือกของช่อง Mission ในไฟล์ Excel (สะกด “Trainning” ตามต้นฉบับ เพื่อให้ตรงกับข้อมูลเดิม)
+export const MISSIONS = ['Ferry Flight', 'Parachute', 'Air Transportation', 'Air Medivac', 'Flight Trainning', 'Special Operation', 'Standardization', 'Other', 'VVIP', 'VIP'];
 
 // ---------- รายการแบบอากาศยาน (ผู้ใช้กำหนดเองได้ สูงสุด 8 แบบ = จำนวนช่องในแม่แบบ Excel) ----------
 // kind: single = เครื่องยนต์เดียว, multi = หลายเครื่องยนต์, sim = เครื่องฝึกบินจำลอง

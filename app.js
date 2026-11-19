@@ -107,6 +107,39 @@ function renderTypeChips(extra = null) {
 const TYPE_COLORS = ['#2f7f6d', '#2c6ea6', '#b8693a', '#8a5ca8', '#7f8f34', '#b08a2e', '#aa4f62', '#6c7380'];
 const typeColor = (name) => { const i = L.AIRCRAFT.indexOf(name); return i >= 0 ? TYPE_COLORS[i % TYPE_COLORS.length] : '#6c7380'; };
 
+// ภารกิจ: ชิปเหมือนหน้าที่ + ชิป “อื่นๆ (พิมพ์เอง)” — ค่าเก็บในช่องข้อความ #f-mission (แสดงเมื่อเลือกพิมพ์เอง)
+let missionCustom = false;
+
+function missionOptions() {
+  const cur = $('#f-mission').value.trim();
+  const counts = new Map();
+  for (const f of state.flights) {
+    const m = (f.mission || '').trim();
+    if (m && !L.MISSIONS.includes(m)) counts.set(m, (counts.get(m) || 0) + 1);
+  }
+  const history = [...counts.entries()].sort((x, y) => y[1] - x[1]).map((x) => x[0]).slice(0, 8);
+  const opts = [...L.MISSIONS, ...history];
+  if (cur && !missionCustom && !opts.includes(cur)) opts.push(cur); // ภารกิจของเที่ยวเก่าที่กำลังแก้/เพิ่งบันทึก
+  return opts;
+}
+
+function renderMissionChips() {
+  $('#chips-mission').innerHTML = missionOptions()
+    .map((m) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(m)}">${esc(m)}</button>`)
+    .join('') + '<button type="button" class="chip" role="radio" aria-checked="false" data-custom="1">อื่นๆ (พิมพ์เอง)</button>';
+  syncMissionChips();
+}
+
+function syncMissionChips() {
+  const inp = $('#f-mission');
+  const val = inp.value.trim();
+  const chips = [...$('#chips-mission').querySelectorAll('.chip[data-v]')];
+  if (val && !chips.some((b) => b.dataset.v === val)) missionCustom = true; // ค่าที่ไม่มีในชิป = พิมพ์เอง
+  chips.forEach((b) => b.setAttribute('aria-checked', String(!missionCustom && b.dataset.v === val)));
+  $('#chips-mission .chip[data-custom]')?.setAttribute('aria-checked', String(missionCustom));
+  inp.hidden = !missionCustom;
+}
+
 function syncChips() {
   for (const [box, sel] of [['#chips-type', '#f-type'], ['#chips-duty', '#f-duty']]) {
     const v = $(sel).value;
@@ -144,6 +177,20 @@ function initForm() {
   renderChips('#chips-duty', '#f-duty', L.DUTIES);
   wireChips('#chips-type', '#f-type');
   wireChips('#chips-duty', '#f-duty');
+  $('#chips-mission').addEventListener('click', (e) => {
+    const b = e.target.closest('.chip');
+    if (!b) return;
+    const inp = $('#f-mission');
+    if (b.dataset.custom) {
+      if (!missionCustom) { missionCustom = true; inp.value = ''; }
+      syncMissionChips();
+      inp.focus();
+      return;
+    }
+    missionCustom = false;
+    inp.value = inp.value.trim() === b.dataset.v ? '' : b.dataset.v; // แตะซ้ำ = ยกเลิก
+    syncMissionChips();
+  });
   $('#conds').innerHTML = L.CONDS.map((c) => `
     <div class="cond" data-key="${c.key}">
       <button type="button" class="chip cond-chip" aria-pressed="false">${c.label}</button>
@@ -185,6 +232,8 @@ function resetForm(keep = {}) {
   $('#f-dep').value = keep.dep || '';
   $('#f-dest').value = '';
   $('#f-mission').value = keep.mission || '';
+  missionCustom = false;
+  renderMissionChips();
   $('#f-hours').value = '';
   $('#f-note').value = '';
   for (const c of L.CONDS) setCond(c.key, null);
@@ -266,6 +315,8 @@ function startEdit(id) {
   $('#f-dep').value = f.dep || '';
   $('#f-dest').value = f.dest || '';
   $('#f-mission').value = f.mission || '';
+  missionCustom = false;
+  renderMissionChips();
   $('#f-hours').value = f.hours;
   $('#f-note').value = f.note || '';
   for (const c of L.CONDS) {
@@ -306,9 +357,8 @@ function refreshSuggestions() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]);
   };
   const places = count(state.flights.flatMap((f) => [f.dep, f.dest])).slice(0, 80);
-  const missions = [...new Set([...count(state.flights.map((f) => f.mission)), ...L.MISSIONS])];
   $('#dl-places').innerHTML = places.map((p) => `<option value="${esc(p)}">`).join('');
-  $('#dl-missions').innerHTML = missions.map((p) => `<option value="${esc(p)}">`).join('');
+  renderMissionChips();
 }
 
 // ---------------------------------------------------------------- รายการ

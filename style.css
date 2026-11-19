@@ -94,6 +94,8 @@ button { font: inherit; }
 
 /* ============ ฟอร์ม ============ */
 .field { display: block; margin-bottom: 16px; font-size: .88rem; color: var(--muted); font-weight: 500; }
+.field.half { max-width: calc(50% - 6px); }
+#f-mission { margin-top: 10px; }
 .lbl { display: block; font-size: .88rem; color: var(--muted); font-weight: 500; margin-bottom: 6px; }
 .lbl small { font-weight: 400; }
 input, select {

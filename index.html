@@ -80,19 +80,20 @@
           <select id="f-type" hidden tabindex="-1" aria-hidden="true"></select>
         </div>
 
+        <label class="field half">หมายเลขอากาศยาน
+          <input id="f-number" type="text" inputmode="numeric" placeholder="521">
+        </label>
+
         <div class="field">
           <span class="lbl" id="lbl-duty">หน้าที่</span>
           <div id="chips-duty" class="chips" role="radiogroup" aria-labelledby="lbl-duty"></div>
           <select id="f-duty" hidden tabindex="-1" aria-hidden="true"></select>
         </div>
 
-        <div class="grid2">
-          <label class="field">หมายเลขอากาศยาน
-            <input id="f-number" type="text" inputmode="numeric" placeholder="521">
-          </label>
-          <label class="field">ภารกิจ
-            <input id="f-mission" type="text" list="dl-missions" placeholder="Ferry Flight">
-          </label>
+        <div class="field">
+          <span class="lbl" id="lbl-mission">ภารกิจ</span>
+          <div id="chips-mission" class="chips" role="radiogroup" aria-labelledby="lbl-mission"></div>
+          <input id="f-mission" type="text" placeholder="พิมพ์ภารกิจ" autocomplete="off" aria-label="ภารกิจ (พิมพ์เอง)" hidden>
         </div>
 
         <div class="grid2">
@@ -114,7 +115,6 @@
         </label>
 
         <datalist id="dl-places"></datalist>
-        <datalist id="dl-missions"></datalist>
 
         <p id="form-error" class="error" role="alert" hidden></p>
         <div class="actions">
@@ -227,7 +227,8 @@
         <ul>
           <li><b>ชั่วโมงบิน</b>: พิมพ์ หรือกดปุ่ม − / + ครั้งละ 0.1</li>
           <li><b>แบบอากาศยาน / หน้าที่</b>: แตะชิปเพื่อเลือก (CP/PI, PC, MP, IP, SP, SOLO)</li>
-          <li><b>ต้นทาง ปลายทาง ภารกิจ</b>: พิมพ์ได้อิสระ แอปจำคำที่เคยใช้ให้เลือก หลังบันทึก ต้นทางเที่ยวถัดไปจะเติมจากปลายทางเที่ยวก่อน</li>
+          <li><b>ภารกิจ</b>: แตะชิป (ชุดเดียวกับรายการเลือกในไฟล์ Excel) แตะซ้ำเพื่อยกเลิก ถ้าไม่มีให้กด “อื่นๆ (พิมพ์เอง)” แล้วพิมพ์ แอปจะจำไว้เป็นชิปให้ครั้งต่อไป</li>
+          <li><b>ต้นทาง ปลายทาง</b>: พิมพ์ได้อิสระ แอปจำคำที่เคยใช้ให้เลือก หลังบันทึก ต้นทางเที่ยวถัดไปจะเติมจากปลายทางเที่ยวก่อน</li>
           <li><b>สภาพการบิน</b> (X-Country, Night, NVG, IFR, IMC): แตะชิปเพื่อเลือก ค่าเริ่มต้นเท่าชั่วโมงบิน ถ้าเป็นแค่บางส่วนให้แก้ตัวเลขที่ปรากฏข้างชิป</li>
           <li>กด <b>บันทึกเที่ยวบิน</b> (ปุ่มติดขอบล่างของจอ)</li>
         </ul>
