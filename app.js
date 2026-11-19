@@ -269,12 +269,17 @@ function validate(f) {
 
 function onSubmit(e) {
   e.preventDefault();
+  const btn = $('#btn-save');
+  if (btn.disabled) return; // กันกดซ้ำเร็ว ๆ
+
   const f = readForm();
   const err = validate(f);
   const box = $('#form-error');
   box.hidden = !err;
   box.textContent = err;
   if (err) return;
+
+  btn.disabled = true; // ปิดปุ่มทันทีหลังผ่าน validation
 
   if (state.editing) {
     const old = state.flights.find((x) => x.id === state.editing);
@@ -293,13 +298,15 @@ function onSubmit(e) {
 
   if (state.editing) {
     exitEdit();
-    toast('แก้ไขเที่ยวบินแล้ว');
+    toast('แก้ไขเที่ยวบินแล้ว', 5000);
     showView('list');
   } else {
-    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`);
+    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 5000);
     resetForm({ ...f, dep: f.dest });
-    $('#f-dest').focus();
   }
+
+  // เปิดปุ่มกลับหลัง 1 วินาที (พอกันกดซ้ำ แต่ยังกรอกเที่ยวถัดไปได้เร็ว)
+  setTimeout(() => { btn.disabled = false; }, 1000);
 }
 
 function startEdit(id) {
