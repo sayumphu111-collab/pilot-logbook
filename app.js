@@ -443,6 +443,7 @@ function renderSummary() {
   const duties = L.DUTIES.filter((d) => types.some((ty) => t.byTypeDuty[`${ty}|${d}`]));
   if (!duties.length) duties.push('CP/PI');
   const cell = (v) => (v ? L.fmt(v) : '–');
+  const dutyTotal = (d) => types.reduce((s, ty) => s + L.num(t.byTypeDuty[`${ty}|${d}`]), 0);
 
   const rows = types.map((ty) => `<tr><td>${esc(ty)}</td>${duties.map((d) => `<td>${cell(t.byTypeDuty[`${ty}|${d}`])}</td>`).join('')}<td><b>${L.fmt(t.byType[ty])}</b></td></tr>`).join('');
 
@@ -464,7 +465,7 @@ function renderSummary() {
       <div class="scroll"><table>
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
-        <tfoot><tr><td>รวม</td>${duties.map(() => '<td></td>').join('')}<td>${L.fmt(t.hours)}</td></tr></tfoot>
+        <tfoot><tr><td>รวม</td>${duties.map((d) => `<td><b>${L.fmt(dutyTotal(d))}</b></td>`).join('')}<td><b>${L.fmt(t.hours)}</b></td></tr></tfoot>
       </table></div></section>
     <section class="card"><h2>ประเภทการบิน</h2><div class="stats">
       ${stat('Single engine', t.single)}${stat('Multi engine', t.multi)}
@@ -528,7 +529,8 @@ function saveOpeningFromDialog() {
       if (L.MULTI.has(ty)) t.multi += h;
     }
   }
-  t.sim = t.byType.SIM || 0;
+  t.sim = 0;
+  for (const [ty, h] of Object.entries(t.byType)) { if (L.SIMS.has(ty)) t.sim += h; }
   backend.saveOpening(t);
   toast('บันทึกยอดยกมาแล้ว');
 }
@@ -788,6 +790,12 @@ async function importXlsx(file) {
         if (f) { f.id = crypto.randomUUID(); f.ord = ord++; incoming.push(f); }
       }
     });
+
+    // ยอด "sim" จากไฟล์ต้องใช้ชนิดเครื่องยนต์ที่ไฟล์ระบุเอง (fileList) เพราะ parseOpening รันก่อนที่รายการใหม่จะถูก setAircraft
+    if (opening && fileList.length) {
+      const simNames = new Set(fileList.filter((a) => a.kind === 'sim').map((a) => a.name));
+      opening.sim = Object.entries(opening.byType).reduce((s, [k, v]) => s + (simNames.has(k) ? v : 0), 0);
+    }
 
     // แบบอากาศยานในไฟล์ เทียบกับรายการของคุณ
     let newList = null;
