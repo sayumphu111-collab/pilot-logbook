@@ -67,7 +67,14 @@ async function createFirebaseBackend() {
   let notified = false;
   // แจ้งว่าได้ข้อมูลล่าสุดจากเซิร์ฟเวอร์แล้ว (ไม่ใช่แค่แคชว่างๆ) — ใช้ตัดสินว่าผู้ใช้ใหม่จริงหรือไม่
   const checkSynced = () => { if (serverFlights && serverConfig && !notified) { notified = true; cb.onSynced?.(); } };
-  const fail = (e) => cb?.onError?.(e?.message || String(e));
+  const friendly = (e) => {
+    const code = e?.code || '';
+    if (code === 'permission-denied') return 'ไม่มีสิทธิ์บันทึกข้อมูล — ลองออกจากระบบแล้วเข้าใหม่ หรือตรวจว่า Publish กฎ Firestore แล้ว (ดู README)';
+    if (code === 'unavailable') return 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ ข้อมูลเก็บไว้ในเครื่องและจะซิงค์เมื่อมีเน็ต';
+    if (code === 'resource-exhausted') return 'โควตาฟรีของวันนี้เต็ม ข้อมูลจะซิงค์ได้อีกครั้งในวันถัดไป';
+    return e?.message || String(e);
+  };
+  const fail = (e) => cb?.onError?.(friendly(e));
 
   function listen() {
     unsubs.forEach((u) => u());

@@ -123,10 +123,16 @@ function missionOptions() {
   return opts;
 }
 
+let missionKey = '';
 function renderMissionChips() {
-  $('#chips-mission').innerHTML = missionOptions()
-    .map((m) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(m)}">${esc(m)}</button>`)
-    .join('') + '<button type="button" class="chip" role="radio" aria-checked="false" data-custom="1">อื่นๆ (พิมพ์เอง)</button>';
+  const opts = missionOptions();
+  const key = opts.join('\u0001');
+  if (key !== missionKey || !$('#chips-mission').firstChild) { // วาดใหม่เฉพาะเมื่อรายการเปลี่ยน
+    missionKey = key;
+    $('#chips-mission').innerHTML = opts
+      .map((m) => `<button type="button" class="chip" role="radio" aria-checked="false" data-v="${esc(m)}">${esc(m)}</button>`)
+      .join('') + '<button type="button" class="chip" role="radio" aria-checked="false" data-custom="1">อื่นๆ (พิมพ์เอง)</button>';
+  }
   syncMissionChips();
 }
 
@@ -269,17 +275,17 @@ function validate(f) {
 
 function onSubmit(e) {
   e.preventDefault();
-  const btn = $('#btn-save');
-  if (btn.disabled) return; // กันกดซ้ำเร็ว ๆ
-
   const f = readForm();
   const err = validate(f);
   const box = $('#form-error');
   box.hidden = !err;
   box.textContent = err;
-  if (err) return;
-
-  btn.disabled = true; // ปิดปุ่มทันทีหลังผ่าน validation
+  if (err) {
+    toast(err, 4500);
+    const field = !f.date ? '#f-date' : (!(f.hours > 0) || f.hours > 24) ? '#f-hours' : null;
+    if (field) { $(field).scrollIntoView({ block: 'center', behavior: 'smooth' }); $(field).focus({ preventScroll: true }); }
+    return;
+  }
 
   if (state.editing) {
     const old = state.flights.find((x) => x.id === state.editing);
@@ -298,15 +304,30 @@ function onSubmit(e) {
 
   if (state.editing) {
     exitEdit();
-    toast('แก้ไขเที่ยวบินแล้ว', 5000);
+    toast('แก้ไขเที่ยวบินแล้ว');
     showView('list');
   } else {
-    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 3000);
+    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`);
     resetForm({ ...f, dep: f.dest });
+    flashSaved();
+    window.scrollTo({ top: 0, behavior: 'smooth' }); // ให้เห็นฟอร์มที่ล้างแล้วและตัวนับชั่วโมงที่เพิ่มขึ้น
+    // บนมือถือ/ไอแพดไม่โฟกัสช่องพิมพ์ เพราะคีย์บอร์ดจะเด้งขึ้นมาบังหน้าจอ (เมาส์/คีย์บอร์ดจริงโฟกัสต่อให้)
+    if (matchMedia('(pointer: fine)').matches) $('#f-dest').focus({ preventScroll: true });
   }
+}
 
-  // เปิดปุ่มกลับหลัง 1 วินาที (พอกันกดซ้ำ แต่ยังกรอกเที่ยวถัดไปได้เร็ว)
-  setTimeout(() => { btn.disabled = false; }, 1000);
+// ปุ่มบันทึกเปลี่ยนเป็น “✓ บันทึกแล้ว” สั้นๆ และกันการกดซ้ำ (กดซ้ำจะเจอข้อความเตือนช่องว่างทั้งที่บันทึกสำเร็จแล้ว)
+function flashSaved() {
+  const b = $('#btn-save');
+  b.disabled = true;
+  b.classList.add('done');
+  b.textContent = '✓ บันทึกแล้ว';
+  navigator.vibrate?.(15);
+  setTimeout(() => {
+    b.disabled = false;
+    b.classList.remove('done');
+    b.textContent = state.editing ? 'บันทึก' : 'บันทึกเที่ยวบิน';
+  }, 700);
 }
 
 function startEdit(id) {
@@ -364,7 +385,8 @@ function refreshSuggestions() {
     return [...m.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]);
   };
   const places = count(state.flights.flatMap((f) => [f.dep, f.dest])).slice(0, 80);
-  $('#dl-places').innerHTML = places.map((p) => `<option value="${esc(p)}">`).join('');
+  const placesHtml = places.map((p) => `<option value="${esc(p)}">`).join('');
+  if ($('#dl-places').dataset.h !== placesHtml) { $('#dl-places').innerHTML = placesHtml; $('#dl-places').dataset.h = placesHtml; }
   renderMissionChips();
 }
 
@@ -386,8 +408,9 @@ function flightRow(f, no) {
 function renderRecent() {
   const box = $('#recent-list');
   const sorted = sortedFlights();
-  if (!sorted.length) { box.innerHTML = '<div class="empty small">ยังไม่มีเที่ยวบิน</div>'; return; }
-  box.innerHTML = sorted.slice(-8).reverse().map((f, i) => flightRow(f, sorted.length - i)).join('');
+  if (!sorted.length) { box.innerHTML = '<div class="empty small">ยังไม่มีเที่ยวบิน</div>'; box.dataset.h = ''; return; }
+  const html = sorted.slice(-8).reverse().map((f, i) => flightRow(f, sorted.length - i)).join('');
+  if (box.dataset.h !== html) { box.innerHTML = html; box.dataset.h = html; }
 }
 
 function renderList() {
@@ -916,6 +939,10 @@ function initTheme() {
 
 // ---------------------------------------------------------------- เริ่มต้น
 async function main() {
+  const setTopH = () => document.documentElement.style.setProperty('--top-h', `${$('.top').offsetHeight}px`);
+  setTopH();
+  addEventListener('resize', setTopH);
+  requestAnimationFrame(setTopH);
   initForm();
   initTheme();
   initAircraftEditor();

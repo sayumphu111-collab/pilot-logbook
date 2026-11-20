@@ -237,9 +237,11 @@ tfoot td { font-weight: 700; border-bottom: 0; }
 
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); z-index: 20; max-width: 90vw; text-align: center;
-  bottom: calc(var(--tabs-h) + 16px + env(safe-area-inset-bottom, 0px));
+  top: calc(var(--top-h, 78px) + 10px); /* อยู่ใต้ส่วนหัว: ไม่ซ้อนกับปุ่มบันทึกหรือเมนูล่าง */
   background: var(--ink); color: var(--bg); padding: 11px 18px; border-radius: 12px; font-size: .92rem; box-shadow: 0 10px 24px -8px rgba(0,0,0,.5);
 }
+.btn:disabled { cursor: default; }
+.btn.primary.done { background: var(--ok); border-color: var(--ok); }
 
 /* ============ ยอดยกมา (dialog) ============ */
 dialog {
@@ -321,7 +323,6 @@ dialog table input { min-height: 40px; padding: 6px 8px; margin: 0; min-width: 6
   .tabs button { min-height: 72px; border-radius: 16px; color: var(--on-header); opacity: .72; font-size: .8rem; }
   .tabs button.on { background: rgba(255,255,255,.16); opacity: 1; color: var(--on-header); }
   .tabs button.on::before { display: none; }
-  .toast { bottom: 28px; }
   .actions { bottom: 10px; }
   .stats { grid-template-columns: repeat(4, 1fr); }
   dialog { margin: auto; border-radius: 20px; }
@@ -337,5 +338,5 @@ dialog table input { min-height: 40px; padding: 6px 8px; margin: 0; min-width: 6
 @media (prefers-reduced-motion: no-preference) {
   .btn, .chip, .flight, .tabs button { transition: background-color .15s, border-color .15s, color .15s, transform .08s; }
   .toast { animation: rise .2s ease-out; }
-  @keyframes rise { from { opacity: 0; transform: translate(-50%, 10px); } }
+  @keyframes rise { from { opacity: 0; transform: translate(-50%, -10px); } }
 }
