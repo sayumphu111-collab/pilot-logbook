@@ -188,6 +188,22 @@ export function slotOrd(sorted, date) {
   return ((sorted[at].ord ?? 0) + (sorted[at + 1].ord ?? 0)) / 2;
 }
 
+// ระยะห่าง ord ระหว่างเที่ยวบิน (เว้นไว้ให้แทรกกลางได้หลายครั้งก่อนต้องจัดเลขใหม่)
+export const ORD_STEP = 1048576;
+
+// ช่องที่จะแทรกแคบเกินไปหรือไม่ (ทศนิยม ord ใกล้หมดความละเอียด) → ต้อง renumber ก่อนแทรก
+export function slotGapTooSmall(sorted, date) {
+  let at = -1;
+  for (let i = sorted.length - 1; i >= 0; i--) if (sorted[i].date <= date) { at = i; break; }
+  if (at < 0 || at === sorted.length - 1) return false;
+  return (sorted[at + 1].ord ?? 0) - (sorted[at].ord ?? 0) < 1e-3;
+}
+
+// จัดเลข ord ใหม่ให้ห่างเท่ากัน (คงลำดับเดิม)
+export function renumber(sorted) {
+  return sorted.map((f, i) => ({ ...f, ord: i * ORD_STEP }));
+}
+
 // จำนวนรายการที่วันที่ย้อนกลับเมื่อเทียบกับรายการก่อนหน้า
 export function countOutOfOrder(sorted) {
   let n = 0;
@@ -202,7 +218,7 @@ export function reorderByDate(sorted) {
     .sort((a, b) => (a.f.date < b.f.date ? -1 : a.f.date > b.f.date ? 1 : a.i - b.i))
     .map((x) => x.f);
   const changed = [];
-  byDate.forEach((f, i) => { if (f.ord !== i) changed.push({ ...f, ord: i }); });
+  byDate.forEach((f, i) => { if (f.ord !== i * ORD_STEP) changed.push({ ...f, ord: i * ORD_STEP }); });
   return changed;
 }
 
@@ -238,17 +254,35 @@ export function serialToISO(serial) {
 
 const clean = (v) => (v === null || v === undefined ? '' : String(v).trim());
 
+// วันที่ที่พิมพ์เป็นข้อความใน Excel: 2024-06-12, 12/06/2024, 12-6-24 (ปีพุทธศักราชแปลงให้) → ISO หรือ ''
+export function parseDateText(str) {
+  const t = String(str ?? '').trim();
+  let y, m, d;
+  let mt = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
+  if (mt) [y, m, d] = [+mt[1], +mt[2], +mt[3]];
+  else if ((mt = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/.exec(t))) [d, m, y] = [+mt[1], +mt[2], +mt[3]];
+  else return '';
+  if (y < 100) y += 2000;
+  if (y > 2400) y -= 543;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 export function rowToFlight(row) {
   const dateRaw = row[1];
-  const hours = row[8];
+  let hours = row[8];
+  if (typeof hours === 'string' && /^\s*\d+([.,]\d+)?\s*$/.test(hours)) hours = num(hours);
   if (typeof hours !== 'number' || !(hours > 0)) return null;
+  hours = Math.round(hours * 100) / 100; // ตัดเศษทศนิยมที่ Excel คำนวณค้างไว้ (1.2000000000000002)
   let date = '';
-  if (typeof dateRaw === 'number') date = serialToISO(dateRaw);
+  if (typeof dateRaw === 'number') date = dateRaw > 0 ? serialToISO(dateRaw) : '';
   else if (dateRaw instanceof Date) date = dateRaw.toISOString().slice(0, 10);
-  else return null;
+  else if (typeof dateRaw === 'string') date = parseDateText(dateRaw);
+  if (!date) return null;
   const type = clean(row[2]).toUpperCase();
   if (!type) return null;
-  const n = (v) => (typeof v === 'number' ? v : 0);
+  const n = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0);
   return {
     date,
     type,
@@ -265,6 +299,42 @@ export function rowToFlight(row) {
     imc: n(row[23]),
     note: clean(row[54]),
   };
+}
+
+// แถวข้อมูลในช่วงแถว 4–21 ที่มีเนื้อหาแต่ rowToFlight อ่านไม่ได้ (เช่น วันที่เป็นข้อความที่แปลงไม่ได้ หรือไม่มีแบบอากาศยาน)
+export function isUnreadableDataRow(row, rowIndex) {
+  return rowIndex >= 3 && rowIndex <= 20 && (num(row[8]) > 0 || clean(row[2]) !== '' || row[1] != null) && !rowToFlight(row);
+}
+
+// ล้างข้อมูลจากไฟล์สำรอง/ภายนอก: เก็บเฉพาะฟิลด์ที่รู้จัก ตัวเลขเป็นตัวเลข ข้อความจำกัดความยาว
+export function sanitizeFlight(f) {
+  if (!f || typeof f !== 'object') return null;
+  const id = String(f.id ?? '').slice(0, 64);
+  const date = String(f.date ?? '');
+  const type = String(f.type ?? '').trim().slice(0, 12);
+  const hours = Math.round(num(f.hours) * 100) / 100;
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0)) return null;
+  const txt = (v, max) => String(v ?? '').trim().slice(0, max);
+  const out = {
+    id, date, type, hours,
+    number: txt(f.number, 20), dep: txt(f.dep, 120), dest: txt(f.dest, 120),
+    mission: txt(f.mission, 120), duty: txt(f.duty, 12), note: txt(f.note, 500),
+    ord: Number.isFinite(Number(f.ord)) ? Number(f.ord) : 0,
+  };
+  for (const c of CONDS) out[c.key] = Math.max(0, Math.round(num(f[c.key]) * 100) / 100);
+  return out;
+}
+
+export function sanitizeOpening(o) {
+  if (!o || typeof o !== 'object') return null;
+  const t = emptyTotals();
+  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = Math.max(0, num(o[k]));
+  for (const key of ['byType', 'byTypeDuty']) {
+    for (const [k, v] of Object.entries(o[key] && typeof o[key] === 'object' ? o[key] : {})) {
+      if (String(k).length <= 40 && num(v) > 0) t[key][k] = num(v);
+    }
+  }
+  return t;
 }
 
 export const flightKey = (f) =>

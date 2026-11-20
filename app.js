@@ -5,7 +5,7 @@ import { fillWorkbook, MAX_PAGES } from './xlsxfill.js';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const state = { flights: [], opening: null, config: null, user: undefined, status: '', editing: null, view: 'add', synced: false, welcome: false, wstep: 0, welcomeChecked: false, recheckWelcome: false };
+const state = { keep: {}, flights: [], opening: null, config: null, user: undefined, status: '', editing: null, view: 'add', synced: false, welcome: false, wstep: 0, welcomeChecked: false, recheckWelcome: false };
 let backend = null;
 let toastTimer = 0;
 
@@ -17,6 +17,10 @@ function toast(msg, ms = 3200) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (t.hidden = true), ms);
 }
+
+// crypto.randomUUID ใช้ไม่ได้ใน iOS < 15.4 → สร้างเองจาก getRandomValues
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
 
 const sortedFlights = () => L.sortFlights(state.flights);
 const totalsNow = () => L.addTotals(state.opening, L.sumFlights(state.flights));
@@ -203,7 +207,8 @@ function initForm() {
       <input id="c-${c.key}" type="number" inputmode="decimal" step="0.1" min="0" placeholder="0.0" aria-label="${c.label} (ชั่วโมง)" hidden>
     </div>`).join('');
 
-  resetForm(LS.get('lb.last', {}));
+  state.keep = { ...LS.get('lb.last', {}), date: undefined }; // วันที่เริ่มต้น = วันนี้ (ไม่ใช้วันที่ของการบันทึกครั้งก่อนข้ามวัน)
+  resetForm(state.keep);
 
   $('#f-type').addEventListener('change', () => {
     const nums = LS.get('lb.nums', {});
@@ -290,17 +295,20 @@ function onSubmit(e) {
   if (state.editing) {
     const old = state.flights.find((x) => x.id === state.editing);
     f.id = state.editing;
-    f.ord = old && old.date === f.date ? old.ord : L.slotOrd(sortedFlights().filter((x) => x.id !== f.id), f.date);
+    f.ord = old && old.date === f.date ? old.ord : placeOrd(f.date, f.id);
   } else {
-    f.id = crypto.randomUUID();
-    f.ord = L.slotOrd(sortedFlights(), f.date);
+    f.id = uuid();
+    f.ord = placeOrd(f.date, null);
   }
   backend.saveFlight(f);
 
-  const nums = LS.get('lb.nums', {});
-  nums[f.type] = f.number;
-  LS.set('lb.nums', nums);
-  LS.set('lb.last', { date: f.date, type: f.type, number: f.number, duty: f.duty, mission: f.mission, dep: f.dest });
+  if (!state.editing) { // จำค่าไว้เติมเที่ยวถัดไป (การแก้ไขเที่ยวเก่าไม่เปลี่ยนค่าที่จำไว้)
+    const nums = LS.get('lb.nums', {});
+    nums[f.type] = f.number;
+    LS.set('lb.nums', nums);
+    state.keep = { date: f.date, type: f.type, number: f.number, duty: f.duty, mission: f.mission, dep: f.dest };
+    LS.set('lb.last', { ...state.keep, date: undefined });
+  }
 
   if (state.editing) {
     exitEdit();
@@ -308,12 +316,24 @@ function onSubmit(e) {
     showView('list');
   } else {
     toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`);
-    resetForm({ ...f, dep: f.dest });
+    resetForm(state.keep);
     flashSaved();
     window.scrollTo({ top: 0, behavior: 'smooth' }); // ให้เห็นฟอร์มที่ล้างแล้วและตัวนับชั่วโมงที่เพิ่มขึ้น
     // บนมือถือ/ไอแพดไม่โฟกัสช่องพิมพ์ เพราะคีย์บอร์ดจะเด้งขึ้นมาบังหน้าจอ (เมาส์/คีย์บอร์ดจริงโฟกัสต่อให้)
     if (matchMedia('(pointer: fine)').matches) $('#f-dest').focus({ preventScroll: true });
   }
+}
+
+// ตำแหน่ง (ord) ของเที่ยวบินที่เพิ่ม/แก้วันที่ — แทรกตามวันที่ ถ้าช่องว่างแคบเกินไปจะจัดเลขใหม่ก่อน
+function placeOrd(date, excludeId) {
+  let others = sortedFlights().filter((x) => x.id !== excludeId);
+  if (L.slotGapTooSmall(others, date)) {
+    const re = L.renumber(others);
+    const changed = re.filter((f, i) => f.ord !== others[i].ord);
+    if (changed.length) backend.saveMany(changed);
+    others = re;
+  }
+  return L.slotOrd(others, date);
 }
 
 // ปุ่มบันทึกเปลี่ยนเป็น “✓ บันทึกแล้ว” สั้นๆ และกันการกดซ้ำ (กดซ้ำจะเจอข้อความเตือนช่องว่างทั้งที่บันทึกสำเร็จแล้ว)
@@ -365,7 +385,7 @@ function exitEdit() {
   $('#btn-cancel').hidden = true;
   $('#btn-delete').hidden = true;
   $('#form-error').hidden = true;
-  resetForm(LS.get('lb.last', {}));
+  resetForm(state.keep);
 }
 
 function onDelete() {
@@ -425,8 +445,10 @@ function renderList() {
   if (q) {
     const hit = sorted.filter((f) => [f.date, L.dmy(f.date), f.type, f.number, f.dep, f.dest, f.mission, f.duty, f.note].join(' ').toLowerCase().includes(q)).reverse();
     const sum = L.sumFlights(hit).hours;
+    const CAP = 150; // แสดงไม่เกิน 150 รายการต่อการค้นหา (ยอดรวมยังนับครบทุกรายการที่พบ)
     box.innerHTML = `<div class="page-head"><span>พบ ${hit.length} รายการ</span><span class="muted">รวม ${L.fmt(sum)} ชม.</span></div>`
-      + (hit.length ? `<div class="rows">${hit.map((f) => flightRow(f, noOf.get(f.id))).join('')}</div>` : '<div class="empty">ไม่พบรายการที่ตรงกับคำค้น</div>');
+      + (hit.length ? `<div class="rows">${hit.slice(0, CAP).map((f) => flightRow(f, noOf.get(f.id))).join('')}</div>` : '<div class="empty">ไม่พบรายการที่ตรงกับคำค้น</div>')
+      + (hit.length > CAP ? `<p class="muted small center">แสดง ${CAP} รายการล่าสุดจาก ${hit.length} — พิมพ์คำค้นเพิ่มเพื่อกรอง</p>` : '');
     return;
   }
   const pages = L.paginate(sorted, state.opening);
@@ -443,7 +465,6 @@ function renderSummary() {
   const duties = L.DUTIES.filter((d) => types.some((ty) => t.byTypeDuty[`${ty}|${d}`]));
   if (!duties.length) duties.push('CP/PI');
   const cell = (v) => (v ? L.fmt(v) : '–');
-  const dutyTotal = (d) => types.reduce((s, ty) => s + L.num(t.byTypeDuty[`${ty}|${d}`]), 0);
 
   const rows = types.map((ty) => `<tr><td>${esc(ty)}</td>${duties.map((d) => `<td>${cell(t.byTypeDuty[`${ty}|${d}`])}</td>`).join('')}<td><b>${L.fmt(t.byType[ty])}</b></td></tr>`).join('');
 
@@ -465,7 +486,7 @@ function renderSummary() {
       <div class="scroll"><table>
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
-        <tfoot><tr><td>รวม</td>${duties.map((d) => `<td><b>${L.fmt(dutyTotal(d))}</b></td>`).join('')}<td><b>${L.fmt(t.hours)}</b></td></tr></tfoot>
+        <tfoot><tr><td>รวม</td>${duties.map(() => '<td></td>').join('')}<td>${L.fmt(t.hours)}</td></tr></tfoot>
       </table></div></section>
     <section class="card"><h2>ประเภทการบิน</h2><div class="stats">
       ${stat('Single engine', t.single)}${stat('Multi engine', t.multi)}
@@ -504,7 +525,7 @@ function openOpeningDialog() {
   $('#opening-fields').innerHTML = `
     <div class="sect">ชั่วโมงสะสมตามแบบ × หน้าที่</div>
     <div class="scroll"><table><thead><tr><th>แบบ</th>${L.DUTIES.map((d) => `<th>${d}</th>`).join('')}</tr></thead>
-    <tbody>${L.AIRCRAFT.map((ty) => `<tr><td>${ty}</td>${L.DUTIES.map((d) => `<td><input type="number" step="0.1" min="0" inputmode="decimal" data-k="${ty}|${d}" value="${val(o.byTypeDuty[`${ty}|${d}`])}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <tbody>${L.AIRCRAFT.map((ty) => `<tr><td>${esc(ty)}</td>${L.DUTIES.map((d) => `<td><input type="number" step="0.1" min="0" inputmode="decimal" data-k="${esc(ty)}|${d}" value="${val(o.byTypeDuty[`${ty}|${d}`])}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>
     <div class="sect">ยอดรวมอื่น ๆ <span class="muted small">(เว้นว่างให้คำนวณอัตโนมัติ: รวม/Single/Multi)</span></div>
     <div class="grid2">${GENERAL.map(([k, label]) => `<label>${label}<input type="number" step="0.1" min="0" inputmode="decimal" data-g="${k}" value="${val(o[k])}"></label>`).join('')}</div>`;
   $('#dlg-opening').returnValue = '';
@@ -529,8 +550,7 @@ function saveOpeningFromDialog() {
       if (L.MULTI.has(ty)) t.multi += h;
     }
   }
-  t.sim = 0;
-  for (const [ty, h] of Object.entries(t.byType)) { if (L.SIMS.has(ty)) t.sim += h; }
+  t.sim = Object.entries(t.byType).reduce((s, [k, v]) => s + (L.SIMS.has(k) ? v : 0), 0);
   backend.saveOpening(t);
   toast('บันทึกยอดยกมาแล้ว');
 }
@@ -731,11 +751,18 @@ function initWelcome() {
 }
 
 // ----- ลบข้อมูลทั้งหมดของฉัน
+function clearLocalPrefs() {
+  try { localStorage.removeItem('lb.last'); localStorage.removeItem('lb.nums'); } catch { /* ข้าม */ }
+  state.keep = {};
+}
+
 function deleteAllMyData() {
   if (!confirm('ลบข้อมูลทั้งหมดของคุณถาวร (เที่ยวบิน ยอดยกมา และรายการแบบอากาศยาน) กู้คืนไม่ได้\n\nแนะนำให้ส่งออก Excel หรือสำรอง JSON ไว้ก่อน\n\nดำเนินการต่อไหม?')) return;
   const word = prompt('พิมพ์คำว่า ลบ เพื่อยืนยัน');
   if ((word || '').trim() !== 'ลบ') { toast('ยกเลิกการลบ'); return; }
   state.recheckWelcome = true;
+  clearLocalPrefs();
+  resetForm(state.keep);
   backend.deleteAll(state.flights.map((f) => f.id));
   toast('ลบข้อมูลทั้งหมดแล้ว');
 }
@@ -770,6 +797,8 @@ async function importXlsx(file) {
     const incoming = [];
     let opening = null;
     let ord = 0;
+    let unreadable = 0;
+    const ordBase = state.flights.length ? Math.max(...state.flights.map((f) => L.num(f.ord))) + 1 : 0; // ต่อท้ายข้อมูลเดิม ไม่แทรกกลาง
     let slotNames = [];
     let fileList = [];
     names.forEach((n, idx) => {
@@ -787,15 +816,9 @@ async function importXlsx(file) {
       }
       for (let i = 3; i < rows.length; i++) {
         const f = L.rowToFlight(rows[i]);
-        if (f) { f.id = crypto.randomUUID(); f.ord = ord++; incoming.push(f); }
+        if (f) { f.id = uuid(); f.ord = ordBase + ord++; incoming.push(f); } else if (L.isUnreadableDataRow(rows[i], i)) unreadable++;
       }
     });
-
-    // ยอด "sim" จากไฟล์ต้องใช้ชนิดเครื่องยนต์ที่ไฟล์ระบุเอง (fileList) เพราะ parseOpening รันก่อนที่รายการใหม่จะถูก setAircraft
-    if (opening && fileList.length) {
-      const simNames = new Set(fileList.filter((a) => a.kind === 'sim').map((a) => a.name));
-      opening.sim = Object.entries(opening.byType).reduce((s, [k, v]) => s + (simNames.has(k) ? v : 0), 0);
-    }
 
     // แบบอากาศยานในไฟล์ เทียบกับรายการของคุณ
     let newList = null;
@@ -803,6 +826,8 @@ async function importXlsx(file) {
     const label = (l) => l.map((a) => a.name).join(', ');
     if (noData && fileList.length && !L.sameAircraft(fileList, L.getAircraft())
       && confirm(`ไฟล์นี้ใช้แบบอากาศยาน: ${label(fileList)}\n\nตั้งเป็นรายการแบบอากาศยานของคุณไหม?\n(ถ้ากดยกเลิก จะใช้รายการปัจจุบัน: ${label(L.getAircraft())})`)) newList = fileList;
+    const nameErr = (list) => list.map((a) => a.name).find((n) => !L.NAME_RE.test(n));
+    if (newList && nameErr(newList)) { alert(`ชื่อแบบอากาศยานในไฟล์ “${nameErr(newList)}” ใช้ไม่ได้ (ใช้ได้เฉพาะ A–Z ตัวเลข และ - . / เว้นวรรค ไม่เกิน 12 ตัว) กรุณาแก้ชื่อในไฟล์แล้วนำเข้าใหม่`); return; }
     const base = newList ?? L.getAircraft();
     const usedTypes = new Set(incoming.map((f) => f.type));
     if (opening) Object.keys(opening.byType).forEach((k) => usedTypes.add(k));
@@ -814,11 +839,14 @@ async function importXlsx(file) {
       }
       if (!confirm(`ไฟล์มีแบบอากาศยานที่ยังไม่มีในรายการ: ${unknown.join(', ')}\n\nเพิ่มเข้ารายการให้ไหม? (ตั้งชนิดเครื่องยนต์ให้เดาเอง ปรับได้ที่ ตั้งค่า → แบบอากาศยานของฉัน)`)) return;
       newList = [...base, ...unknown.map((name) => ({ name, kind: L.guessKind(name) }))];
+      if (nameErr(newList) || L.validateAircraft(newList)) { alert(`ชื่อแบบอากาศยานในไฟล์ใช้ไม่ได้: ${[...unknown, ...newList.map((x) => x.name)].filter((n, i, arr) => !L.NAME_RE.test(n) && arr.indexOf(n) === i).join(', ') || unknown.join(', ')}\n\nใช้ได้เฉพาะ A–Z ตัวเลข และ - . / เว้นวรรค ไม่เกิน 12 ตัว กรุณาแก้ชื่อในไฟล์แล้วนำเข้าใหม่`); return; }
     }
+    if (newList && L.validateAircraft(newList)) { alert(L.validateAircraft(newList)); return; }
 
     const fresh = L.filterNew(state.flights, incoming);
     const skipped = incoming.length - fresh.length;
     const lines = [`พบ ${incoming.length} เที่ยวบินในไฟล์`, `จะเพิ่มใหม่ ${fresh.length} รายการ${skipped ? ` (ข้ามที่ซ้ำ ${skipped})` : ''}`];
+    if (unreadable) lines.push(`⚠ ข้ามแถวที่อ่านไม่ได้ ${unreadable} แถว (วันที่ไม่ใช่รูปแบบวันที่ หรือไม่มีแบบอากาศยาน/ชั่วโมงบิน) ตรวจในไฟล์ก่อน`);
     if (opening) lines.push(`ยอดยกมาในไฟล์: ${L.fmt(opening.hours)} ชม.`);
     if (!fresh.length && !opening) { toast('ไม่มีข้อมูลใหม่ให้นำเข้า'); return; }
     if (!confirm(`${lines.join('\n')}\n\nนำเข้าเลยไหม?`)) return;
@@ -873,13 +901,15 @@ async function importJson(file) {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'pilot-logbook' || !Array.isArray(data.flights)) throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอป');
-    const flights = data.flights.filter((f) => f && f.id && f.date && f.type);
+    const flights = data.flights.map(L.sanitizeFlight).filter(Boolean);
+    const opening = L.sanitizeOpening(data.opening);
     const aircraft = data.aircraft && !L.validateAircraft(data.aircraft) ? data.aircraft : null;
-    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${data.opening ? ' และยอดยกมา' : ''}${aircraft ? ' และรายการแบบอากาศยาน (แทนที่รายการปัจจุบัน)' : ''}?\nรายการที่มีอยู่แล้วจะถูกอัปเดต ไม่ซ้ำซ้อน`)) return;
+    if (data.flights.length !== flights.length) toast(`ข้ามรายการที่ข้อมูลไม่ครบ ${data.flights.length - flights.length} รายการ`, 5000);
+    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${opening ? ' และยอดยกมา' : ''}${aircraft ? ' และรายการแบบอากาศยาน (แทนที่รายการปัจจุบัน)' : ''}?\nรายการที่มีอยู่แล้วจะถูกอัปเดต ไม่ซ้ำซ้อน`)) return;
     if (aircraft) backend.saveConfig({ v: 1, aircraft });
     backend.saveMany(flights);
-    if (data.opening) backend.saveOpening(data.opening);
-    toast('กู้คืนข้อมูลแล้ว');
+    if (opening) backend.saveOpening(opening);
+    toast(`กู้คืนข้อมูลแล้ว (${flights.length} เที่ยวบิน)`);
   } catch (e) {
     toast(e.message || 'กู้คืนไม่สำเร็จ');
   }
@@ -941,7 +971,9 @@ function initTheme() {
   const pick = (patch) => { const t = { ...LS.get('lb.theme', {}), ...patch }; LS.set('lb.theme', t); applyTheme(t); };
   $('#theme-mode').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) pick({ mode: b.dataset.mode }); });
   $('#theme-accent').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) pick({ accent: b.dataset.accent }); });
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(LS.get('lb.theme', {})));
+  const mq = matchMedia('(prefers-color-scheme: dark)');
+  const onScheme = () => applyTheme(LS.get('lb.theme', {}));
+  if (mq.addEventListener) mq.addEventListener('change', onScheme); else mq.addListener?.(onScheme); // Safari < 14
   applyTheme(LS.get('lb.theme', {}));
 }
 
@@ -961,7 +993,8 @@ async function main() {
     const b = e.target.closest('.flight');
     if (b) startEdit(b.dataset.id);
   });
-  $('#search').addEventListener('input', renderList);
+  let searchTimer = 0; // หน่วงการค้นหาเล็กน้อย กันกระตุกบนมือถือเมื่อมีข้อมูลหลายร้อยรายการ
+  $('#search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderList, 160); });
   $('#btn-login').addEventListener('click', () => backend.signIn());
   $('#btn-logout').addEventListener('click', () => backend.signOut());
   $('#btn-opening').addEventListener('click', openOpeningDialog);
@@ -990,6 +1023,9 @@ async function main() {
     onConfig(c) { applyConfig(c); maybeWelcome(); },
     onSynced() { state.synced = true; maybeWelcome(); },
     onUser(u) {
+      const id = u ? (u.email || 'local') : null;
+      if (!id || (state.uid && state.uid !== id)) { clearLocalPrefs(); resetForm(state.keep); } // ไม่ให้ข้อมูลของผู้ใช้คนก่อนค้างในฟอร์ม
+      state.uid = id || null;
       state.user = u;
       if (!u) { state.synced = false; state.welcome = false; state.welcomeChecked = false; }
       showView(state.view);

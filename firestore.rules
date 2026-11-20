@@ -4,6 +4,12 @@ service cloud.firestore {
     // ผู้ใช้อ่าน/เขียนได้เฉพาะข้อมูลของตัวเอง
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      // ตัวเลือก: จำกัดให้เฉพาะอีเมลที่คุณอนุญาตเท่านั้นที่ใช้ได้ (กันคนแปลกหน้าสมัครใช้โควตาฟรีของคุณ)
+      // ให้ลบ allow ด้านบน แล้วใช้แบบนี้แทน (ใส่อีเมลของแต่ละคน):
+      //   allow read, write: if request.auth != null && request.auth.uid == uid
+      //     && request.auth.token.email_verified == true
+      //     && request.auth.token.email in ['you@gmail.com', 'friend@gmail.com'];
     }
   }
 }

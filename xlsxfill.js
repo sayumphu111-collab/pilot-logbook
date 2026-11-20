@@ -1,6 +1,6 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, isDefaultAircraft, num, slotDuties } from './logic.js';
+import { AIRCRAFT, CONDS, PAGE_SIZE, addTotals, isDefaultAircraft, num, slotDuties } from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -17,7 +17,8 @@ export function colLetters(n) {
   return s;
 }
 
-const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+const CELL_MAX = 30000; // Excel รับข้อความในเซลล์ได้ไม่เกิน 32,767 ตัวอักษร
+const xmlEsc = (s) => String(s).slice(0, CELL_MAX).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 
 export function isoToSerial(iso) {
   const [y, m, d] = iso.split('-').map(Number);
@@ -189,6 +190,9 @@ export function rebuildSummary(xml, aircraft) {
   return xml;
 }
 
+// ช่อง (แบบ|หน้าที่) ที่ชีต Summary ต้นฉบับอ้างถึง — นอกจากนี้ต้นฉบับไม่รวมไว้
+const ORIGINAL_SUMMARY_COVERED = new Set(['AW139|CP/PI', 'AW139|PC', 'AW139|MP', 'AS550|CP/PI', 'AS550|PC', 'AS550|MP', 'BELL212|CP/PI', 'UH1|CP/PI', 'H269|CP/PI', 'H269|PC', 'EN48|CP/PI', 'SIM|CP/PI']);
+
 export async function customizeTemplate({ getText, setText }, aircraft) {
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
   const slotNames = Array.from({ length: 8 }, (_, i) => aircraft[i]?.name ?? UNUSED);
@@ -236,6 +240,20 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
   }
   // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์/Summary ในแม่แบบก่อนกรอก
   if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
+  else if (aircraft) {
+    // ชีต Summary ของต้นฉบับไม่อ้างถึงบางช่อง (เช่น AW149, IP, SP) ถ้ามีชั่วโมงอยู่ตรงนั้นให้เขียนแถว Summary ใหม่ให้ครบ
+    // (ถ้าไม่มี จะคงไฟล์ต้นฉบับไว้ทุกประการ)
+    const total = pages.length ? pages[pages.length - 1].forward : addTotals(opening, null);
+    const FIVE = new Set(['CP/PI', 'PC', 'MP', 'IP', 'SP']);
+    const uncovered = Object.entries(total.byTypeDuty || {}).some(([k, v]) => {
+      const [, duty] = k.split('|');
+      return v > 0 && FIVE.has(duty) && !ORIGINAL_SUMMARY_COVERED.has(k);
+    });
+    if (uncovered) {
+      const sp = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+      if (sp.Summary) setText(sp.Summary, rebuildSummary(await getText(sp.Summary), aircraft));
+    }
+  }
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
   for (const p of pages) {
     const path = paths[`S${p.n}`];
