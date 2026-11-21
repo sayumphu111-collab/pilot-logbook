@@ -69,7 +69,8 @@ export function fillSheetXml(xml, values) {
 
 // ---------- ค่าของแต่ละหน้า (ช่องที่ผู้ใช้กรอกในต้นฉบับ) ----------
 // B=วันที่ C=แบบ D=หมายเลข E=ต้นทาง F=ปลายทาง G=ภารกิจ H=หน้าที่ I=ชั่วโมง
-// T=X-Country U=Night Un-aided V=NVG W=IFR Training X=IMC BC=หมายเหตุ
+// T=X-Country U=Night Un-aided V=NVG W=IFR Training X=IMC
+// BC–BD=SOLO (สูตรคำนวณเอง) BE=หมายเหตุ
 const COND_COL = { xc: 'T', nightUn: 'U', nvg: 'V', ifr: 'W', imc: 'X' };
 
 export function pageValues(page) {
@@ -85,7 +86,7 @@ export function pageValues(page) {
     if (f.duty) v[`H${r}`] = f.duty;
     v[`I${r}`] = num(f.hours);
     for (const c of CONDS) if (num(f[c.key]) > 0) v[`${COND_COL[c.key]}${r}`] = num(f[c.key]);
-    if (f.note) v[`BC${r}`] = f.note;
+    if (f.note) v[`BE${r}`] = f.note;
   });
   return v;
 }
@@ -98,6 +99,8 @@ const DUTY_BLOCKS = [
   ['IP', 'AS', 5],
   ['SP', 'AX', 5],
 ];
+// SOLO: BC=ช่อง5, BD=ช่อง6
+const SOLO_COLS = { 5: 'BC', 6: 'BD' };
 export function openingValues(o) {
   const t = o || {};
   const v = {};
@@ -107,6 +110,10 @@ export function openingValues(o) {
   put('T', t.xc); put('U', t.nightUn); put('V', t.nvg); put('W', t.ifr); put('X', t.imc);
   for (const [duty, start, count] of DUTY_BLOCKS) {
     for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|${duty}`] : 0);
+  }
+  for (const [slot, col] of Object.entries(SOLO_COLS)) {
+    const i = Number(slot);
+    put(col, AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|SOLO`] : 0);
   }
   return v;
 }
@@ -156,8 +163,20 @@ export function renameSharedStrings(sst, slotNames) {
 }
 
 // ชีต Summary: เขียนแถวแบบอากาศยาน (แถว 5–12) ใหม่ตามรายการของผู้ใช้
+// SOLO อยู่ในคอลัมน์ C ของ Summary และอ้าง BC/BD ของ S50 เท่านั้น (ช่อง 5 และ 6)
 const DUTY_FIRST_COL = { 'CP/PI': 'Z', PC: 'AH', MP: 'AN', IP: 'AS', SP: 'AX' };
-const DUTY_SUMMARY_COL = { 'CP/PI': 'D', PC: 'E', MP: 'F', IP: 'G', SP: 'H' };
+const DUTY_SUMMARY_COL = { SOLO: 'C', 'CP/PI': 'D', PC: 'E', MP: 'F', IP: 'G', SP: 'H' };
+const SOLO_SHEET_COL = { 5: 'BC', 6: 'BD' };
+
+function dutySheetRef(duty, slotIndex) {
+  if (duty === 'SOLO') {
+    const col = SOLO_SHEET_COL[slotIndex];
+    return col ? `'S50'!${col}24` : null;
+  }
+  const base = DUTY_FIRST_COL[duty];
+  if (!base) return null;
+  return `'S50'!${colLetters(colNum(base) + slotIndex)}24`;
+}
 
 function setSummaryCell(xml, ref, spec) {
   const re = new RegExp(`<c r="${ref}"((?:\\s+[A-Za-z:]+="[^"]*")*)\\s*(?:/>|>[\\s\\S]*?</c>)`);
@@ -179,11 +198,14 @@ export function rebuildSummary(xml, aircraft) {
     const cells = {};
     if (a) {
       cells.B = { text: a.name };
-      const refs = slotDuties(k).map((d) => ({ d, ref: `'S50'!${colLetters(colNum(DUTY_FIRST_COL[d]) + k)}24` }));
+      const refs = slotDuties(k).map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
       if (a.kind === 'sim') cells.M = { f: refs.map((x) => x.ref).join('+') };
-      else for (const x of refs) cells[DUTY_SUMMARY_COL[x.d]] = { f: x.ref };
-      if (a.kind === 'single') cells.N = { f: `SUM(D${r}:H${r})` };
-      if (a.kind === 'multi') cells.O = { f: `SUM(D${r}:H${r})` };
+      else for (const x of refs) {
+        const col = DUTY_SUMMARY_COL[x.d];
+        if (col) cells[col] = { f: x.ref };
+      }
+      if (a.kind === 'single') cells.N = { f: `SUM(C${r}:H${r})` };
+      if (a.kind === 'multi') cells.O = { f: `SUM(C${r}:H${r})` };
     }
     for (const col of 'BCDEFGHIJKLMNO') xml = setSummaryCell(xml, `${col}${r}`, cells[col] || null);
   }
@@ -191,7 +213,16 @@ export function rebuildSummary(xml, aircraft) {
 }
 
 // ช่อง (แบบ|หน้าที่) ที่ชีต Summary ต้นฉบับอ้างถึง — นอกจากนี้ต้นฉบับไม่รวมไว้
-const ORIGINAL_SUMMARY_COVERED = new Set(['AW139|CP/PI', 'AW139|PC', 'AW139|MP', 'AS550|CP/PI', 'AS550|PC', 'AS550|MP', 'BELL212|CP/PI', 'UH1|CP/PI', 'H269|CP/PI', 'H269|PC', 'EN48|CP/PI', 'SIM|CP/PI']);
+const ORIGINAL_SUMMARY_COVERED = new Set([
+  'AW139|CP/PI', 'AW139|PC', 'AW139|MP', 'AW139|IP', 'AW139|SP',
+  'AW149|CP/PI', 'AW149|PC', 'AW149|MP', 'AW149|IP', 'AW149|SP',
+  'AS550|CP/PI', 'AS550|PC', 'AS550|MP', 'AS550|IP', 'AS550|SP',
+  'BELL212|CP/PI', 'BELL212|PC', 'BELL212|MP', 'BELL212|IP', 'BELL212|SP',
+  'UH1|CP/PI', 'UH1|PC', 'UH1|MP', 'UH1|IP', 'UH1|SP',
+  'H269|CP/PI', 'H269|PC', 'H269|SOLO',
+  'EN48|CP/PI', 'EN48|SOLO',
+  'SIM|CP/PI',
+]);
 
 export async function customizeTemplate({ getText, setText }, aircraft) {
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));

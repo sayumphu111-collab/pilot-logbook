@@ -280,6 +280,9 @@ function validate(f) {
 
 function onSubmit(e) {
   e.preventDefault();
+  const btn = $('#btn-save');
+  if (btn.disabled) return; // กันกดซ้ำเร็ว ๆ
+
   const f = readForm();
   const err = validate(f);
   const box = $('#form-error');
@@ -291,6 +294,8 @@ function onSubmit(e) {
     if (field) { $(field).scrollIntoView({ block: 'center', behavior: 'smooth' }); $(field).focus({ preventScroll: true }); }
     return;
   }
+
+  btn.disabled = true;
 
   if (state.editing) {
     const old = state.flights.find((x) => x.id === state.editing);
@@ -312,16 +317,17 @@ function onSubmit(e) {
 
   if (state.editing) {
     exitEdit();
-    toast('แก้ไขเที่ยวบินแล้ว');
+    toast('แก้ไขเที่ยวบินแล้ว', 5000);
     showView('list');
   } else {
-    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`);
+    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 5000);
     resetForm(state.keep);
     flashSaved();
     window.scrollTo({ top: 0, behavior: 'smooth' }); // ให้เห็นฟอร์มที่ล้างแล้วและตัวนับชั่วโมงที่เพิ่มขึ้น
-    // บนมือถือ/ไอแพดไม่โฟกัสช่องพิมพ์ เพราะคีย์บอร์ดจะเด้งขึ้นมาบังหน้าจอ (เมาส์/คีย์บอร์ดจริงโฟกัสต่อให้)
-    if (matchMedia('(pointer: fine)').matches) $('#f-dest').focus({ preventScroll: true });
+    // ไม่โฟกัสช่องใดหลังบันทึก (กัน datalist/คีย์บอร์ดเด้งบน iPad)
   }
+
+  setTimeout(() => { btn.disabled = false; }, 1000);
 }
 
 // ตำแหน่ง (ord) ของเที่ยวบินที่เพิ่ม/แก้วันที่ — แทรกตามวันที่ ถ้าช่องว่างแคบเกินไปจะจัดเลขใหม่ก่อน

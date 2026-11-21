@@ -54,9 +54,14 @@ export function validateAircraft(list) {
 }
 
 // ในไฟล์ Excel: ช่อง (ลำดับ) ที่ i มีคอลัมน์ "แบบ × หน้าที่" ให้หน้าที่ใดบ้าง
+// ช่อง 0–4 (AW139..UH1): CP/PI PC MP IP SP
+// ช่อง 5 (H269): CP/PI PC SOLO
+// ช่อง 6 (EN48): CP/PI SOLO
+// ช่อง 7 (SIM): CP/PI
 export function slotDuties(i) {
   if (i < 5) return ['CP/PI', 'PC', 'MP', 'IP', 'SP'];
-  if (i === 5) return ['CP/PI', 'PC'];
+  if (i === 5) return ['CP/PI', 'PC', 'SOLO'];
+  if (i === 6) return ['CP/PI', 'SOLO'];
   return ['CP/PI'];
 }
 // เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ยังนับในชั่วโมงรวมตามปกติ)
@@ -118,7 +123,7 @@ export function addTotals(a, b) {
 }
 
 // ยอดยกมา (Opening balance) = ค่าที่พิมพ์ไว้ใน "Total Last Page" ของชีต S1
-// แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BB=แบบ x หน้าที่
+// แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BB=แบบ x หน้าที่ BC..BD=SOLO
 const DUTY_BLOCKS = [
   ['CP/PI', 25, 8],
   ['PC', 33, 6],
@@ -126,6 +131,8 @@ const DUTY_BLOCKS = [
   ['IP', 44, 5],
   ['SP', 49, 5],
 ];
+// SOLO มีแค่ 2 คอลัมน์: BC=ช่อง5 (H269), BD=ช่อง6 (EN48) — index 0-based ของแถว = 54, 55
+const SOLO_OPENING = [[54, 5], [55, 6]];
 // names = ชื่อแบบของแต่ละช่องในไฟล์ (ค่าเริ่มต้น = รายการปัจจุบัน)
 export function parseOpening(row, names = AIRCRAFT) {
   const t = emptyTotals();
@@ -138,6 +145,10 @@ export function parseOpening(row, names = AIRCRAFT) {
       const v = n(start + i);
       if (v && names[i]) t.byTypeDuty[`${names[i]}|${duty}`] = v;
     }
+  }
+  for (const [col, slot] of SOLO_OPENING) {
+    const v = n(col);
+    if (v && names[slot]) t.byTypeDuty[`${names[slot]}|SOLO`] = v;
   }
   t.sim = Object.entries(t.byType).reduce((a, [k, v]) => a + (SIMS.has(k) ? v : 0), 0);
   return t;
@@ -297,7 +308,7 @@ export function rowToFlight(row) {
     nvg: n(row[21]),
     ifr: n(row[22]),
     imc: n(row[23]),
-    note: clean(row[54]),
+    note: clean(row[56]), // คอลัมน์ BE (แม่แบบใหม่มี SOLO ที่ BC–BD แล้วหมายเหตุเลื่อนมา BE)
   };
 }
 
