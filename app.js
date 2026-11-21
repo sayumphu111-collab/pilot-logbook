@@ -108,10 +108,9 @@ function renderTypeChips(extra = null) {
   syncChips();
 }
 
-// SOLO ใช้ได้เฉพาะ H269 / EN48 (และ EN480 ตามสูตรในไฟล์ Excel)
+// SOLO ใช้ได้เฉพาะแบบที่อยู่ในช่อง 5–6 (คอลัมน์ BC/BD ใน Excel หลัง rename ตามรายการผู้ใช้)
 function allowedDuties(type) {
-  const t = String(type || '').trim().toUpperCase();
-  const soloOk = t === 'H269' || t === 'EN48' || t === 'EN480';
+  const soloOk = L.isSoloAllowed(type);
   return soloOk ? L.DUTIES : L.DUTIES.filter((d) => d !== 'SOLO');
 }
 
@@ -296,10 +295,16 @@ function readForm() {
 
 function validate(f) {
   if (!f.date) return 'เลือกวันที่';
+  if (!f.type || !L.AIRCRAFT.includes(f.type)) return 'เลือกแบบอากาศยานจากรายการ';
   if (!(f.hours > 0)) return 'ใส่ชั่วโมงบิน (มากกว่า 0)';
   if (f.hours > 24) return 'ชั่วโมงบินเกิน 24 ชม. ตรวจสอบอีกครั้ง';
-  if (f.duty === 'SOLO' && !allowedDuties(f.type).includes('SOLO')) {
-    return 'หน้าที่ SOLO ใช้ได้เฉพาะแบบ H269 หรือ EN48';
+  const duties = allowedDuties(f.type);
+  if (!f.duty || !duties.includes(f.duty)) {
+    if (f.duty === 'SOLO') {
+      const names = [...L.soloAircraftNames()].join(' / ') || 'ช่อง 6–7 ในรายการแบบ';
+      return `หน้าที่ SOLO ใช้ได้เฉพาะแบบ ${names}`;
+    }
+    return 'เลือกหน้าที่จากรายการที่อนุญาตตามแบบอากาศยาน';
   }
   for (const c of L.CONDS) {
     if (f[c.key] > f.hours + 1e-9) return `${c.label} มากกว่าชั่วโมงบินรวมของเที่ยวนี้`;
@@ -334,6 +339,10 @@ function onSubmit(e) {
     f.id = uuid();
     f.ord = placeOrd(f.date, null);
   }
+
+  // optimistic: อัปเดต UI ทันที แล้วค่อยซิงค์ backend (snapshot จะทับค่าเดิมเมื่อมาถึง)
+  applyFlightLocal(f);
+  pendingSyncToast = true;
   backend.saveFlight(f);
 
   if (!state.editing) { // จำค่าไว้เติมเที่ยวถัดไป (การแก้ไขเที่ยวเก่าไม่เปลี่ยนค่าที่จำไว้)
@@ -344,20 +353,31 @@ function onSubmit(e) {
     LS.set('lb.last', { ...state.keep, date: undefined });
   }
 
+  const syncHint = state.status === 'local' ? '' : (state.status === 'synced' ? '' : ' · กำลังซิงค์');
   if (state.editing) {
     exitEdit();
-    toast('แก้ไขเที่ยวบินแล้ว', 5000);
+    toast(`แก้ไขเที่ยวบินแล้ว${syncHint}`, 5000);
     showView('list');
   } else {
-    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.`, 5000);
+    toast(`บันทึกแล้ว · ${L.fmt(f.hours)} ชม.${syncHint}`, 5000);
     resetForm(state.keep);
     flashSaved();
     window.scrollTo({ top: 0, behavior: 'smooth' }); // ให้เห็นฟอร์มที่ล้างแล้วและตัวนับชั่วโมงที่เพิ่มขึ้น
-    // ไม่โฟกัสช่องใดหลังบันทึก (กัน datalist/คีย์บอร์ดเด้งบน iPad)
   }
 
   setTimeout(() => { btn.disabled = false; }, 1000);
 }
+
+function applyFlightLocal(f) {
+  const i = state.flights.findIndex((x) => x.id === f.id);
+  state.flights = i >= 0
+    ? state.flights.map((x, j) => (j === i ? { ...f } : x))
+    : [...state.flights, { ...f }];
+  refreshSuggestions();
+  renderCurrent();
+}
+
+let pendingSyncToast = false;
 
 // ตำแหน่ง (ord) ของเที่ยวบินที่เพิ่ม/แก้วันที่ — แทรกตามวันที่ ถ้าช่องว่างแคบเกินไปจะจัดเลขใหม่ก่อน
 function placeOrd(date, excludeId) {
@@ -505,6 +525,8 @@ function renderSummary() {
   const cell = (v) => (v ? L.fmt(v) : '–');
 
   const rows = types.map((ty) => `<tr><td>${esc(ty)}</td>${duties.map((d) => `<td>${cell(t.byTypeDuty[`${ty}|${d}`])}</td>`).join('')}<td><b>${L.fmt(t.byType[ty])}</b></td></tr>`).join('');
+  // แถวรวม: ผลรวมชั่วโมงตามแต่ละคอลัมน์หน้าที่
+  const dutyTotals = duties.map((d) => types.reduce((a, ty) => a + L.num(t.byTypeDuty[`${ty}|${d}`]), 0));
 
   const today = L.todayISO();
   const since = (days) => {
@@ -524,7 +546,7 @@ function renderSummary() {
       <div class="scroll"><table>
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
-        <tfoot><tr><td>รวม</td>${duties.map(() => '<td></td>').join('')}<td>${L.fmt(t.hours)}</td></tr></tfoot>
+        <tfoot><tr><td>รวม</td>${dutyTotals.map((v) => `<td><b>${v ? L.fmt(v) : '–'}</b></td>`).join('')}<td><b>${L.fmt(t.hours)}</b></td></tr></tfoot>
       </table></div></section>
     <section class="card"><h2>ประเภทการบิน</h2><div class="stats">
       ${stat('Single engine', t.single)}${stat('Multi engine', t.multi)}
@@ -836,6 +858,7 @@ async function importXlsx(file) {
     let opening = null;
     let ord = 0;
     let unreadable = 0;
+    let dutyFixed = 0;
     const ordBase = state.flights.length ? Math.max(...state.flights.map((f) => L.num(f.ord))) + 1 : 0; // ต่อท้ายข้อมูลเดิม ไม่แทรกกลาง
     let slotNames = [];
     let fileList = [];
@@ -848,13 +871,22 @@ async function importXlsx(file) {
         slotNames = L.sheetSlotNames(ws);
         fileList = L.sheetAircraft(ws);
         if (rows[22]) {
-          const o = L.parseOpening(rows[22], slotNames.some(Boolean) ? slotNames : L.AIRCRAFT);
-          if (o.hours > 0) opening = o;
+          const o = L.sanitizeOpening(L.parseOpening(rows[22], slotNames.some(Boolean) ? slotNames : L.AIRCRAFT));
+          if (o && o.hours > 0) opening = o;
         }
       }
       for (let i = 3; i < rows.length; i++) {
-        const f = L.rowToFlight(rows[i]);
-        if (f) { f.id = uuid(); f.ord = ordBase + ord++; incoming.push(f); } else if (L.isUnreadableDataRow(rows[i], i)) unreadable++;
+        const raw = L.rowToFlight(rows[i]);
+        if (raw) {
+          raw.id = uuid();
+          raw.ord = ordBase + ord++;
+          // sanitize: จำกัดความยาว, แก้ duty/SOLO, ปัดตัวเลข, คลิปสภาพการบิน
+          const f = L.sanitizeFlight(raw);
+          if (f) {
+            if (f._dutyFixed) { dutyFixed++; delete f._dutyFixed; }
+            incoming.push(f);
+          } else unreadable++;
+        } else if (L.isUnreadableDataRow(rows[i], i)) unreadable++;
       }
     });
 
@@ -885,6 +917,7 @@ async function importXlsx(file) {
     const skipped = incoming.length - fresh.length;
     const lines = [`พบ ${incoming.length} เที่ยวบินในไฟล์`, `จะเพิ่มใหม่ ${fresh.length} รายการ${skipped ? ` (ข้ามที่ซ้ำ ${skipped})` : ''}`];
     if (unreadable) lines.push(`⚠ ข้ามแถวที่อ่านไม่ได้ ${unreadable} แถว (วันที่ไม่ใช่รูปแบบวันที่ หรือไม่มีแบบอากาศยาน/ชั่วโมงบิน) ตรวจในไฟล์ก่อน`);
+    if (dutyFixed) lines.push(`⚠ ปรับหน้าที่ ${dutyFixed} รายการ (SOLO กับแบบที่ไม่มีคอลัมน์ หรือค่านอกรายการ → CP/PI)`);
     if (opening) lines.push(`ยอดยกมาในไฟล์: ${L.fmt(opening.hours)} ชม.`);
     if (!fresh.length && !opening) { toast('ไม่มีข้อมูลใหม่ให้นำเข้า'); return; }
     if (!confirm(`${lines.join('\n')}\n\nนำเข้าเลยไหม?`)) return;
@@ -925,6 +958,21 @@ async function exportXlsx() {
       : 'ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets', gaps ? 6500 : 3200);
   } catch (e) {
     toast(e.message || 'ส่งออกไม่สำเร็จ');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function downloadTemplate() {
+  const btn = $('#btn-download-template');
+  btn.disabled = true;
+  try {
+    const res = await fetch('template.xlsx');
+    if (!res.ok) throw new Error('ไม่พบไฟล์ template.xlsx ในเว็บ');
+    download(`Pilot_Logbook_Template.xlsx`, await res.blob());
+    toast('ดาวน์โหลดแม่แบบแล้ว');
+  } catch (e) {
+    toast(e.message || 'ดาวน์โหลดแม่แบบไม่สำเร็จ');
   } finally {
     btn.disabled = false;
   }
@@ -1038,6 +1086,7 @@ async function main() {
   $('#btn-opening').addEventListener('click', openOpeningDialog);
   $('#dlg-opening').addEventListener('close', () => { if ($('#dlg-opening').returnValue === 'save') saveOpeningFromDialog(); });
   $('#btn-export-xlsx').addEventListener('click', exportXlsx);
+  $('#btn-download-template').addEventListener('click', downloadTemplate);
   $('#btn-export-json').addEventListener('click', exportJson);
   $('#btn-sort').addEventListener('click', sortByDate);
   $('#btn-delete-all').addEventListener('click', deleteAllMyData);
@@ -1068,8 +1117,18 @@ async function main() {
       if (!u) { state.synced = false; state.welcome = false; state.welcomeChecked = false; }
       showView(state.view);
     },
-    onStatus(s) { state.status = s; renderHeader(); },
-    onError(msg) { toast(msg); },
+    onStatus(s) {
+      const prev = state.status;
+      state.status = s;
+      renderHeader();
+      // ยืนยันซิงค์หลังบันทึก (pending/offline → synced)
+      if (pendingSyncToast && s === 'synced' && prev !== 'synced') {
+        pendingSyncToast = false;
+        toast('ซิงค์ขึ้นเซิร์ฟเวอร์แล้ว', 2500);
+      }
+      if (s === 'local') pendingSyncToast = false;
+    },
+    onError(msg) { pendingSyncToast = false; toast(msg); },
   });
   showView('add');
 }

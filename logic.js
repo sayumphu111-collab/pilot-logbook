@@ -1,8 +1,8 @@
 // logic.js — ตรรกะล้วน ไม่แตะ DOM / Firebase (ทดสอบด้วย Node ได้)
 
 export const DUTIES = ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
-// ชุดเดียวกับรายการเลือกของช่อง Mission ในไฟล์ Excel (สะกด “Trainning” ตามต้นฉบับ เพื่อให้ตรงกับข้อมูลเดิม)
-export const MISSIONS = ['Ferry Flight', 'Parachute', 'Air Transportation', 'Air Medivac', 'Flight Trainning', 'Special Operation', 'Standardization', 'Other', 'VVIP', 'VIP'];
+// รายการภารกิจ (สะกด Flight Training ให้ถูกต้อง; ข้อมูลเก่าที่สะกด Trainning ยังนำเข้าได้)
+export const MISSIONS = ['Ferry Flight', 'Parachute', 'Air Transportation', 'Air Medivac', 'Flight Training', 'Special Operation', 'Standardization', 'Other', 'VVIP', 'VIP'];
 
 // ---------- รายการแบบอากาศยาน (ผู้ใช้กำหนดเองได้ สูงสุด 8 แบบ = จำนวนช่องในแม่แบบ Excel) ----------
 // kind: single = เครื่องยนต์เดียว, multi = หลายเครื่องยนต์, sim = เครื่องฝึกบินจำลอง
@@ -64,6 +64,15 @@ export function slotDuties(i) {
   if (i === 6) return ['CP/PI', 'SOLO'];
   return ['CP/PI'];
 }
+
+// SOLO ในไฟล์ Excel อยู่คอลัมน์ BC/BD = ช่องลำดับ 5 และ 6 (ชื่อตามรายการผู้ใช้หลัง rename)
+export function soloAircraftNames() {
+  return new Set([AIRCRAFT[5], AIRCRAFT[6]].filter(Boolean).map((n) => String(n).toUpperCase()));
+}
+export function isSoloAllowed(type) {
+  return soloAircraftNames().has(String(type || '').trim().toUpperCase());
+}
+
 // เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ยังนับในชั่วโมงรวมตามปกติ)
 export function coverageGaps(flights) {
   let n = 0;
@@ -291,16 +300,21 @@ export function rowToFlight(row) {
   else if (dateRaw instanceof Date) date = dateRaw.toISOString().slice(0, 10);
   else if (typeof dateRaw === 'string') date = parseDateText(dateRaw);
   if (!date) return null;
-  const type = clean(row[2]).toUpperCase();
+  const type = clean(row[2]).toUpperCase().slice(0, 12);
   if (!type) return null;
-  const n = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0);
+  // รับทั้ง number และ string ตัวเลขจาก Excel (เช่น "1.5")
+  const n = (v) => Math.max(0, Math.round(num(v) * 100) / 100);
+  // หมายเหตุ: แม่แบบใหม่ = BE (index 56), แม่แบบเก่า = BC (index 54)
+  const note = clean(row[56]) || clean(row[54]);
+  let mission = clean(row[6]);
+  if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training'; // แก้สะกดเดิมในไฟล์
   return {
     date,
     type,
     number: clean(row[3]),
     dep: clean(row[4]),
     dest: clean(row[5]),
-    mission: clean(row[6]),
+    mission,
     duty: clean(row[7]).toUpperCase(),
     hours,
     xc: n(row[19]),
@@ -308,7 +322,7 @@ export function rowToFlight(row) {
     nvg: n(row[21]),
     ifr: n(row[22]),
     imc: n(row[23]),
-    note: clean(row[56]), // คอลัมน์ BE (แม่แบบใหม่มี SOLO ที่ BC–BD แล้วหมายเหตุเลื่อนมา BE)
+    note,
   };
 }
 
@@ -322,17 +336,29 @@ export function sanitizeFlight(f) {
   if (!f || typeof f !== 'object') return null;
   const id = String(f.id ?? '').slice(0, 64);
   const date = String(f.date ?? '');
-  const type = String(f.type ?? '').trim().slice(0, 12);
+  let type = String(f.type ?? '').trim().toUpperCase().slice(0, 12);
   const hours = Math.round(num(f.hours) * 100) / 100;
-  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0)) return null;
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0) || hours > 24) return null;
   const txt = (v, max) => String(v ?? '').trim().slice(0, max);
+  let duty = txt(f.duty, 12).toUpperCase();
+  const dutyIn = duty;
+  if (!DUTIES.includes(duty)) duty = 'CP/PI'; // หน้าที่นอกรายการ → ค่าเริ่มต้น
+  // SOLO ใช้ได้เฉพาะแบบที่อยู่ในช่อง 5–6 ของรายการผู้ใช้ (คอลัมน์ BC/BD ใน Excel)
+  if (duty === 'SOLO' && !isSoloAllowed(type)) duty = 'CP/PI';
+  let mission = txt(f.mission, 120);
+  if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training';
   const out = {
     id, date, type, hours,
     number: txt(f.number, 20), dep: txt(f.dep, 120), dest: txt(f.dest, 120),
-    mission: txt(f.mission, 120), duty: txt(f.duty, 12), note: txt(f.note, 500),
+    mission, duty, note: txt(f.note, 500),
     ord: Number.isFinite(Number(f.ord)) ? Number(f.ord) : 0,
   };
-  for (const c of CONDS) out[c.key] = Math.max(0, Math.round(num(f[c.key]) * 100) / 100);
+  // สภาพการบินไม่เกินชั่วโมงบินของเที่ยว
+  for (const c of CONDS) {
+    const v = Math.max(0, Math.round(num(f[c.key]) * 100) / 100);
+    out[c.key] = Math.min(v, hours);
+  }
+  if (dutyIn && dutyIn !== duty) out._dutyFixed = dutyIn; // บอก import ว่ามีการแก้ duty
   return out;
 }
 
