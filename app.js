@@ -108,6 +108,29 @@ function renderTypeChips(extra = null) {
   syncChips();
 }
 
+// SOLO ใช้ได้เฉพาะ H269 / EN48 (และ EN480 ตามสูตรในไฟล์ Excel)
+function allowedDuties(type) {
+  const t = String(type || '').trim().toUpperCase();
+  const soloOk = t === 'H269' || t === 'EN48' || t === 'EN480';
+  return soloOk ? L.DUTIES : L.DUTIES.filter((d) => d !== 'SOLO');
+}
+
+function renderDutyChips(extra = null) {
+  const type = $('#f-type')?.value || L.AIRCRAFT[0];
+  const duties = allowedDuties(type);
+  const cur = $('#f-duty')?.value;
+  // extra = หน้าที่ของเที่ยวเก่าที่กำลังแก้ (เช่น SOLO) ให้ยังแสดงในชิปได้
+  renderChips('#chips-duty', '#f-duty', duties, extra);
+  if (cur && duties.includes(cur)) {
+    $('#f-duty').value = cur;
+  } else if (extra && (duties.includes(extra) || extra === cur)) {
+    $('#f-duty').value = extra;
+  } else if (!duties.includes($('#f-duty').value)) {
+    $('#f-duty').value = duties[0];
+  }
+  syncChips();
+}
+
 const TYPE_COLORS = ['#2f7f6d', '#2c6ea6', '#b8693a', '#8a5ca8', '#7f8f34', '#b08a2e', '#aa4f62', '#6c7380'];
 const typeColor = (name) => { const i = L.AIRCRAFT.indexOf(name); return i >= 0 ? TYPE_COLORS[i % TYPE_COLORS.length] : '#6c7380'; };
 
@@ -184,7 +207,7 @@ function syncAutoConds() {
 
 function initForm() {
   renderChips('#chips-type', '#f-type', L.AIRCRAFT);
-  renderChips('#chips-duty', '#f-duty', L.DUTIES);
+  renderDutyChips();
   wireChips('#chips-type', '#f-type');
   wireChips('#chips-duty', '#f-duty');
   $('#chips-mission').addEventListener('click', (e) => {
@@ -213,6 +236,7 @@ function initForm() {
   $('#f-type').addEventListener('change', () => {
     const nums = LS.get('lb.nums', {});
     $('#f-number').value = nums[$('#f-type').value] || '';
+    renderDutyChips(); // SOLO แสดงเฉพาะ H269 / EN48
   });
   $('#conds').addEventListener('click', (e) => {
     const chip = e.target.closest('.cond-chip');
@@ -239,7 +263,9 @@ function resetForm(keep = {}) {
   $('#f-type').value = L.AIRCRAFT.includes(keep.type) ? keep.type : L.AIRCRAFT[0];
   const nums = LS.get('lb.nums', {});
   $('#f-number').value = keep.number ?? nums[$('#f-type').value] ?? '';
-  $('#f-duty').value = L.DUTIES.includes(keep.duty) ? keep.duty : L.DUTIES[0];
+  renderDutyChips();
+  const duties = allowedDuties($('#f-type').value);
+  $('#f-duty').value = duties.includes(keep.duty) ? keep.duty : duties[0];
   $('#f-dep').value = keep.dep || '';
   $('#f-dest').value = '';
   $('#f-mission').value = keep.mission || '';
@@ -272,6 +298,9 @@ function validate(f) {
   if (!f.date) return 'เลือกวันที่';
   if (!(f.hours > 0)) return 'ใส่ชั่วโมงบิน (มากกว่า 0)';
   if (f.hours > 24) return 'ชั่วโมงบินเกิน 24 ชม. ตรวจสอบอีกครั้ง';
+  if (f.duty === 'SOLO' && !allowedDuties(f.type).includes('SOLO')) {
+    return 'หน้าที่ SOLO ใช้ได้เฉพาะแบบ H269 หรือ EN48';
+  }
   for (const c of L.CONDS) {
     if (f[c.key] > f.hours + 1e-9) return `${c.label} มากกว่าชั่วโมงบินรวมของเที่ยวนี้`;
   }
@@ -365,7 +394,10 @@ function startEdit(id) {
   renderTypeChips(f.type);
   $('#f-type').value = f.type;
   $('#f-number').value = f.number || '';
-  $('#f-duty').value = L.DUTIES.includes(f.duty) ? f.duty : L.DUTIES[0];
+  // ตอนแก้เที่ยวเก่า ถ้า duty เดิมเป็น SOLO ให้ยังเห็นชิป (จะถูก validate ตอนบันทึก)
+  renderDutyChips(f.duty);
+  const duties = allowedDuties(f.type);
+  $('#f-duty').value = duties.includes(f.duty) || f.duty === 'SOLO' ? f.duty : duties[0];
   $('#f-dep').value = f.dep || '';
   $('#f-dest').value = f.dest || '';
   $('#f-mission').value = f.mission || '';
