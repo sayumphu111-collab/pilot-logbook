@@ -226,7 +226,7 @@ function initForm() {
   $('#conds').innerHTML = L.CONDS.map((c) => `
     <div class="cond" data-key="${c.key}">
       <button type="button" class="chip cond-chip" aria-pressed="false">${c.label}</button>
-      <input id="c-${c.key}" type="number" inputmode="decimal" step="0.1" min="0" placeholder="0.0" aria-label="${c.label} (ชั่วโมง)" hidden>
+      <input id="c-${c.key}" type="number" inputmode="decimal" step="any" min="0" placeholder="0.0" aria-label="${c.label} (ชั่วโมง)" hidden>
     </div>`).join('');
 
   state.keep = { ...LS.get('lb.last', {}), date: undefined }; // วันที่เริ่มต้น = วันนี้ (ไม่ใช้วันที่ของการบันทึกครั้งก่อนข้ามวัน)
@@ -247,8 +247,8 @@ function initForm() {
   $('#conds').addEventListener('input', (e) => { const el = e.target.closest('.cond'); if (el) el.dataset.auto = ''; });
   $('#f-hours').addEventListener('input', syncAutoConds);
   document.querySelectorAll('.stepper [data-step]').forEach((b) => b.addEventListener('click', () => {
-    const next = Math.max(0, Math.round((L.num($('#f-hours').value) + Number(b.dataset.step)) * 10) / 10);
-    $('#f-hours').value = next ? next.toFixed(1) : '';
+    const next = Math.max(0, Math.round((L.num($('#f-hours').value) + Number(b.dataset.step)) * 1e8) / 1e8);
+    $('#f-hours').value = next ? String(next) : '';
     syncAutoConds();
   }));
   $('#form').addEventListener('submit', onSubmit);
@@ -585,9 +585,9 @@ function openOpeningDialog() {
   $('#opening-fields').innerHTML = `
     <div class="sect">ชั่วโมงสะสมตามแบบ × หน้าที่</div>
     <div class="scroll"><table><thead><tr><th>แบบ</th>${L.DUTIES.map((d) => `<th>${d}</th>`).join('')}</tr></thead>
-    <tbody>${L.AIRCRAFT.map((ty) => `<tr><td>${esc(ty)}</td>${L.DUTIES.map((d) => `<td><input type="number" step="0.1" min="0" inputmode="decimal" data-k="${esc(ty)}|${d}" value="${val(o.byTypeDuty[`${ty}|${d}`])}"></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <tbody>${L.AIRCRAFT.map((ty) => `<tr><td>${esc(ty)}</td>${L.DUTIES.map((d) => `<td><input type="number" step="any" min="0" inputmode="decimal" data-k="${esc(ty)}|${d}" value="${val(o.byTypeDuty[`${ty}|${d}`])}" ${L.slotDuties(L.AIRCRAFT.indexOf(ty)).includes(d) ? '' : 'disabled'}></td>`).join('')}</tr>`).join('')}</tbody></table></div>
     <div class="sect">ยอดรวมอื่น ๆ <span class="muted small">(เว้นว่างให้คำนวณอัตโนมัติ: รวม/Single/Multi)</span></div>
-    <div class="grid2">${GENERAL.map(([k, label]) => `<label>${label}<input type="number" step="0.1" min="0" inputmode="decimal" data-g="${k}" value="${val(o[k])}"></label>`).join('')}</div>`;
+    <div class="grid2">${GENERAL.map(([k, label]) => `<label>${label}<input type="number" step="any" min="0" inputmode="decimal" data-g="${k}" value="${val(o[k])}"></label>`).join('')}</div>`;
   $('#dlg-opening').returnValue = '';
   $('#dlg-opening').showModal();
 }
@@ -595,6 +595,7 @@ function openOpeningDialog() {
 function saveOpeningFromDialog() {
   const t = L.emptyTotals();
   for (const inp of document.querySelectorAll('#opening-fields [data-k]')) {
+    if (inp.disabled) continue;
     const v = L.num(inp.value);
     if (!v) continue;
     const [ty] = inp.dataset.k.split('|');
@@ -947,14 +948,19 @@ async function exportXlsx() {
     const zip = await JSZip.loadAsync(await res.arrayBuffer());
     const text = new Map();
     await fillWorkbook({
-      getText: async (p) => text.get(p) ?? (await zip.file(p).async('string')),
+      getText: async (p) => {
+        if (text.has(p)) return text.get(p);
+        const file = zip.file(p);
+        if (!file) throw new Error(`Not found: ${p}`);
+        return file.async('string');
+      },
       setText: (p, t) => { text.set(p, t); zip.file(p, t); },
     }, pages, state.opening, L.getAircraft());
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     download(`Pilot_Logbook_${L.todayISO()}.xlsx`, blob);
-    const gaps = L.coverageGaps(sorted);
+    const gaps = L.coverageGaps(sorted, state.opening);
     toast(gaps
-      ? `ส่งออกแล้ว · มี ${gaps} เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับในไฟล์ Excel (ยังนับในชั่วโมงรวมแล้ว)`
+      ? `ส่งออกแล้ว · มี ${gaps} รายการ (เที่ยวบิน/ยอดยกมา) ที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ไม่ได้ลงช่องแบบ × หน้าที่)`
       : 'ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets', gaps ? 6500 : 3200);
   } catch (e) {
     toast(e.message || 'ส่งออกไม่สำเร็จ');

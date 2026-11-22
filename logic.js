@@ -74,11 +74,19 @@ export function isSoloAllowed(type) {
 }
 
 // เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ยังนับในชั่วโมงรวมตามปกติ)
-export function coverageGaps(flights) {
+export function coverageGaps(flights, opening = null) {
   let n = 0;
-  for (const f of flights) {
-    const i = AIRCRAFT.indexOf(f.type);
-    if (i < 0 || !slotDuties(i).includes(f.duty)) n++;
+  const supported = (type, duty) => {
+    const i = AIRCRAFT.indexOf(type);
+    return i >= 0 && slotDuties(i).includes(duty);
+  };
+  for (const f of flights) if (!supported(f.type, f.duty)) n++;
+  for (const [key, value] of Object.entries(opening?.byTypeDuty || {})) {
+    if (num(value) <= 0) continue;
+    const split = key.lastIndexOf('|');
+    const type = key.slice(0, split);
+    const duty = key.slice(split + 1);
+    if (!supported(type, duty)) n++;
   }
   return n;
 }
@@ -100,8 +108,10 @@ export const num = (v) => {
 };
 
 export function fmt(x) {
-  const r = Math.round(num(x) * 100) / 100;
-  return Math.abs(r * 10 - Math.round(r * 10)) < 1e-9 ? r.toFixed(1) : r.toFixed(2);
+  // แสดง Decimal Hours โดยตรง (ไม่แปลงเป็นชั่วโมง:นาที) และซ่อน floating-point noise
+  const r = Number(num(x).toPrecision(15));
+  const s = new Intl.NumberFormat('en-US', { useGrouping: false, maximumSignificantDigits: 15 }).format(r);
+  return s.includes('.') ? s : `${s}.0`;
 }
 
 export function emptyTotals() {
@@ -294,7 +304,7 @@ export function rowToFlight(row) {
   let hours = row[8];
   if (typeof hours === 'string' && /^\s*\d+([.,]\d+)?\s*$/.test(hours)) hours = num(hours);
   if (typeof hours !== 'number' || !(hours > 0)) return null;
-  hours = Math.round(hours * 100) / 100; // ตัดเศษทศนิยมที่ Excel คำนวณค้างไว้ (1.2000000000000002)
+  // เก็บชั่วโมงเป็น Decimal Hours ตามค่าต้นฉบับ ไม่ปัดเป็นนาทีหรือจำกัด 2 ตำแหน่ง
   let date = '';
   if (typeof dateRaw === 'number') date = dateRaw > 0 ? serialToISO(dateRaw) : '';
   else if (dateRaw instanceof Date) date = dateRaw.toISOString().slice(0, 10);
@@ -303,7 +313,7 @@ export function rowToFlight(row) {
   const type = clean(row[2]).toUpperCase().slice(0, 12);
   if (!type) return null;
   // รับทั้ง number และ string ตัวเลขจาก Excel (เช่น "1.5")
-  const n = (v) => Math.max(0, Math.round(num(v) * 100) / 100);
+  const n = (v) => Math.max(0, num(v));
   // หมายเหตุ: แม่แบบใหม่ = BE (index 56), แม่แบบเก่า = BC (index 54)
   const note = clean(row[56]) || clean(row[54]);
   let mission = clean(row[6]);
@@ -337,7 +347,7 @@ export function sanitizeFlight(f) {
   const id = String(f.id ?? '').slice(0, 64);
   const date = String(f.date ?? '');
   let type = String(f.type ?? '').trim().toUpperCase().slice(0, 12);
-  const hours = Math.round(num(f.hours) * 100) / 100;
+  const hours = num(f.hours);
   if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0) || hours > 24) return null;
   const txt = (v, max) => String(v ?? '').trim().slice(0, max);
   let duty = txt(f.duty, 12).toUpperCase();
@@ -355,7 +365,7 @@ export function sanitizeFlight(f) {
   };
   // สภาพการบินไม่เกินชั่วโมงบินของเที่ยว
   for (const c of CONDS) {
-    const v = Math.max(0, Math.round(num(f[c.key]) * 100) / 100);
+    const v = Math.max(0, num(f[c.key]));
     out[c.key] = Math.min(v, hours);
   }
   if (dutyIn && dutyIn !== duty) out._dutyFixed = dutyIn; // บอก import ว่ามีการแก้ duty

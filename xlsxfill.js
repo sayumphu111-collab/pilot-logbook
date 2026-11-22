@@ -26,7 +26,8 @@ export function isoToSerial(iso) {
 }
 
 // ---------- สร้าง XML ของเซลล์ ----------
-const numXml = (ref, s, v) => `<c r="${ref}"${s}><v>${Math.round(v * 1e6) / 1e6}</v></c>`;
+const excelNumber = (v) => Number.isFinite(Number(v)) ? String(Number(Number(v).toPrecision(15))) : '0';
+const numXml = (ref, s, v) => `<c r="${ref}"${s}><v>${excelNumber(v)}</v></c>`;
 const strXml = (ref, s, v) => `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
 const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : strXml(ref, s, v));
 
@@ -104,7 +105,7 @@ const SOLO_COLS = { 5: 'BC', 6: 'BD' };
 export function openingValues(o) {
   const t = o || {};
   const v = {};
-  const put = (col, x) => { v[`${col}23`] = Math.round(num(x) * 100) / 100; };
+  const put = (col, x) => { v[`${col}23`] = num(x); };
   put('I', t.hours); put('J', t.single); put('K', t.multi);
   for (let i = 0; i < 8; i++) put(colLetters(colNum('L') + i), AIRCRAFT[i] ? t.byType?.[AIRCRAFT[i]] : 0);
   put('T', t.xc); put('U', t.nightUn); put('V', t.nvg); put('W', t.ifr); put('X', t.imc);
@@ -144,6 +145,15 @@ export function setFormulaText(xml, ref, text) {
 
 const engineFormula = (names, r) =>
   (names.length ? `IF(OR(${names.map((n) => `C${r}=${q(xmlEsc(n))}`).join(',')}), I${r},${q('-')})` : `IF(FALSE, I${r},${q('-')})`);
+
+// ชั่วโมงบินเป็นตัวเลข Decimal Hours ไม่ใช่รายการ dropdown แบบเพิ่มทีละ 0.1
+export function retargetHoursValidation(xml) {
+  return xml.replace(/<dataValidation\b([^>]*\bsqref="I4:I21"[^>]*)><formula1>[\s\S]*?<\/formula1>(?:<formula2>[\s\S]*?<\/formula2>)?<\/dataValidation>/, (m, rawAttrs) => {
+    let attrs = rawAttrs.replace(/\s+type="[^"]*"/, '').replace(/\s+operator="[^"]*"/, '');
+    attrs += ' type="decimal" operator="between"';
+    return `<dataValidation${attrs}><formula1>0</formula1><formula2>24</formula2></dataValidation>`;
+  });
+}
 
 // รายการ dropdown ของช่อง "Type" (C)
 export function retargetTypeValidation(xml, names) {
@@ -224,6 +234,40 @@ const ORIGINAL_SUMMARY_COVERED = new Set([
   'SIM|CP/PI',
 ]);
 
+// เปลี่ยนหัวคอลัมน์ที่แม่แบบเก็บเป็น inlineStr (ไม่ใช่ sharedStrings)
+function setInlineHeader(xml, ref, value) {
+  const re = new RegExp(`<c r="${ref}"((?:\\s+[A-Za-z:]+="[^"]*")*)\\s*(?:/>|>([\\s\\S]*?)</c>)`);
+  const m = re.exec(xml);
+  if (!m) return xml;
+  const style = /\bs="(\d+)"/.exec(m[1]);
+  const attrs = style ? ` s="${style[1]}"` : '';
+  const cell = value
+    ? `<c r="${ref}"${attrs} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(value)}</t></is></c>`
+    : `<c r="${ref}"${attrs} t="inlineStr"><is><t></t></is></c>`;
+  return xml.replace(m[0], () => cell);
+}
+
+const HEADER_GROUPS = [
+  ['L', 8, 0],       // Aircraft type totals
+  ['Z', 8, 0],       // CP/PI
+  ['AH', 6, 0],      // PC
+  ['AN', 5, 0],      // MP
+  ['AS', 5, 0],      // IP
+  ['AX', 5, 0],      // SP
+];
+function retargetInlineHeaders(xml, aircraft) {
+  for (const [start, count, offset] of HEADER_GROUPS) {
+    for (let i = 0; i < count; i++) {
+      const name = aircraft[i + offset]?.name || '';
+      xml = setInlineHeader(xml, `${colLetters(colNum(start) + i)}3`, name);
+    }
+  }
+  // SOLO รองรับเฉพาะช่องแบบอากาศยานลำดับ 5 และ 6 ในโครงสร้าง Excel นี้
+  xml = setInlineHeader(xml, 'BC3', aircraft[5]?.name || '');
+  xml = setInlineHeader(xml, 'BD3', aircraft[6]?.name || '');
+  return xml;
+}
+
 export async function customizeTemplate({ getText, setText }, aircraft) {
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
   const slotNames = Array.from({ length: 8 }, (_, i) => aircraft[i]?.name ?? UNUSED);
@@ -239,9 +283,16 @@ export async function customizeTemplate({ getText, setText }, aircraft) {
     x = setFormulaText(x, 'K4', engineFormula(multis, 4));
     x = setFormulaText(x, 'K5', engineFormula(multis, 5));
     x = retargetTypeValidation(x, names);
+    x = retargetInlineHeaders(x, aircraft);
     setText(path, x);
   }
-  setText('xl/sharedStrings.xml', renameSharedStrings(await getText('xl/sharedStrings.xml'), slotNames));
+  // แม่แบบรุ่นนี้ใช้ inline strings และไม่มี sharedStrings.xml; รองรับทั้งสองแบบ
+  try {
+    const shared = await getText('xl/sharedStrings.xml');
+    setText('xl/sharedStrings.xml', renameSharedStrings(shared, slotNames));
+  } catch (e) {
+    if (!/not found|ENOENT|missing|undefined/i.test(String(e?.message || e))) throw e;
+  }
   if (paths.Summary) setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
 }
 
@@ -286,6 +337,12 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
     }
   }
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+  // ทุกชีตใช้ช่อง Hours เป็นตัวเลขทศนิยม 0–24 ไม่ใช่ dropdown 0.1–5.0
+  for (let n = 1; n <= MAX_PAGES; n++) {
+    const path = paths[`S${n}`];
+    if (!path) continue;
+    setText(path, retargetHoursValidation(await getText(path)));
+  }
   for (const p of pages) {
     const path = paths[`S${p.n}`];
     if (!path) throw new Error(`ไม่พบชีต S${p.n} ในแม่แบบ`);
