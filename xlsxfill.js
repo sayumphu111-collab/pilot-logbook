@@ -1,6 +1,6 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, isDefaultAircraft, num, slotDuties } from './logic.js';
+import { AIRCRAFT, CONDS, PAGE_SIZE, SIMS, isDefaultAircraft, num, slotDuties } from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -27,7 +27,8 @@ export function isoToSerial(iso) {
 // ---------- สร้าง XML ของเซลล์ ----------
 const numXml = (ref, s, v) => `<c r="${ref}"${s}><v>${Math.round(v * 1e6) / 1e6}</v></c>`;
 const strXml = (ref, s, v) => `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
-const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : strXml(ref, s, v));
+const fmlXml = (ref, s, f) => `<c r="${ref}"${s}><f>${f}</f></c>`; // สูตร (ไม่ cached — Excel/Sheets จะคำนวณตอนเปิดไฟล์)
+const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : (v && typeof v === 'object' && 'f' in v) ? fmlXml(ref, s, v.f) : strXml(ref, s, v));
 
 // ---------- ใส่ค่าเข้าชีต ----------
 // values: { 'B4': 45486, 'C4': 'AW139', ... }
@@ -106,6 +107,13 @@ export function openingValues(o) {
   put('T', t.xc); put('U', t.nightUn); put('V', t.nvg); put('W', t.ifr); put('X', t.imc);
   for (const [duty, start, count] of DUTY_BLOCKS) {
     for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|${duty}`] : 0);
+  }
+  // SIM: ให้ "Flight Duty" (CP/PI×SIM) อ้างอิง "Aircraft Type" ของ SIM ที่แถว Total Last Page
+  // (SIM มีคอลัมน์ Flight Duty ใต้ CP/PI เท่านั้น) → AG23 = S23; แถว 24 (cumulative) จะตามเอง
+  for (let i = 0; i < 8; i++) {
+    if (AIRCRAFT[i] && SIMS.has(AIRCRAFT[i])) {
+      v[`${colLetters(colNum('Z') + i)}23`] = { f: `${colLetters(colNum('L') + i)}23` };
+    }
   }
   return v;
 }
