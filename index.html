@@ -68,7 +68,7 @@
             <label class="lbl" for="f-hours">ชั่วโมงบิน</label>
             <div class="stepper">
               <button type="button" data-step="-0.1" aria-label="ลด 0.1 ชั่วโมง">−</button>
-              <input id="f-hours" type="number" inputmode="decimal" step="any" min="0" max="24" required placeholder="0.0">
+              <input id="f-hours" type="number" inputmode="decimal" step="0.1" min="0" max="24" required placeholder="0.0">
               <button type="button" data-step="0.1" aria-label="เพิ่ม 0.1 ชั่วโมง">+</button>
             </div>
           </div>
@@ -81,7 +81,7 @@
         </div>
 
         <label class="field half">หมายเลขอากาศยาน
-          <input id="f-number" type="text" maxlength="20" inputmode="numeric" placeholder="521">
+          <input id="f-number" type="text" inputmode="numeric" placeholder="521">
         </label>
 
         <div class="field">
@@ -93,15 +93,15 @@
         <div class="field">
           <span class="lbl" id="lbl-mission">ภารกิจ</span>
           <div id="chips-mission" class="chips" role="radiogroup" aria-labelledby="lbl-mission"></div>
-          <input id="f-mission" type="text" maxlength="120" placeholder="พิมพ์ภารกิจ" autocomplete="off" aria-label="ภารกิจ (พิมพ์เอง)" hidden>
+          <input id="f-mission" type="text" placeholder="พิมพ์ภารกิจ" autocomplete="off" aria-label="ภารกิจ (พิมพ์เอง)" hidden>
         </div>
 
         <div class="grid2">
           <label class="field">ต้นทาง
-            <input id="f-dep" type="text" maxlength="120" list="dl-places" placeholder="ค่ายสุรนารี">
+            <input id="f-dep" type="text" list="dl-places" placeholder="ค่ายสุรนารี">
           </label>
           <label class="field">ปลายทาง
-            <input id="f-dest" type="text" maxlength="120" list="dl-places">
+            <input id="f-dest" type="text" list="dl-places">
           </label>
         </div>
 
@@ -111,7 +111,7 @@
         </div>
 
         <label class="field">หมายเหตุ
-          <input id="f-note" type="text" maxlength="500">
+          <input id="f-note" type="text">
         </label>
 
         <datalist id="dl-places"></datalist>
@@ -188,13 +188,12 @@
           <input id="file-xlsx" type="file" accept=".xlsx,.xlsm">
         </label>
         <button id="btn-export-xlsx" class="btn">ส่งออกเป็น Excel</button>
-        <button id="btn-download-template" class="btn">ดาวน์โหลดแม่แบบ Excel เปล่า</button>
         <button id="btn-export-json" class="btn">สำรองข้อมูล (JSON)</button>
         <label class="btn file">กู้คืนจากไฟล์สำรอง (JSON)
           <input id="file-json" type="file" accept=".json,application/json">
         </label>
       </div>
-      <p class="muted small">ส่งออกเป็นไฟล์รูปแบบเดียวกับต้นฉบับทุกอย่าง (ชีต Summary + S1–S50 พร้อมสูตร) เปิดด้วย Excel หรือ Google Sheets · แม่แบบเปล่าใช้กรอกด้วยมือหรือเป็นต้นทางก่อนนำเข้า</p>
+      <p class="muted small">ส่งออกเป็นไฟล์รูปแบบเดียวกับต้นฉบับทุกอย่าง (ชีต Summary + S1–S50 พร้อมสูตร) เปิดด้วย Excel หรือ Google Sheets</p>
     </section>
 
     <section class="card">
@@ -319,7 +318,7 @@
           <li><b>ส่งออก/นำเข้า Excel ไม่ได้</b>: ต้องต่อเน็ตเพื่อโหลดตัวช่วยครั้งแรก ลองใหม่เมื่อมีสัญญาณ</li>
           <li><b>ยอดใน Excel ว่างหรือไม่ตรงในหน้าพรีวิว</b>: เปิดด้วย Excel หรือ Google Sheets เพื่อให้คำนวณสูตรใหม่</li>
           <li><b>เห็นหน้าเก่าหลังมีการอัปเดต</b>: ปิดแอปแล้วเปิดใหม่ หรือรีเฟรชหน้าเว็บ (Ctrl+Shift+R)</li>
-          <li><b>ล็อกอินไม่ได้</b>: อนุญาตป๊อปอัปของเว็บนี้ แล้วกดเข้าสู่ระบบใหม่ ถ้าใช้แอปที่ติดตั้งบนหน้าจอโฮมของ iPhone/iPad แล้วล็อกอินไม่สำเร็จ ให้เปิดผ่าน Safari ตามปกติแทน</li>
+          <li><b>ล็อกอินไม่ได้</b>: อนุญาตป๊อปอัปของเว็บนี้ แล้วกดเข้าสู่ระบบใหม่</li>
         </ul>
       </details>
     </section>

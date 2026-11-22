@@ -59,7 +59,6 @@ h2 { font-size: 1.05rem; }
 button { font: inherit; }
 .muted { color: var(--muted); }
 .small { font-size: .85rem; }
-.center { text-align: center; }
 [hidden] { display: none !important; }
 
 /* ============ หัวหน้า ============ */
@@ -104,7 +103,6 @@ input, select {
   font: inherit; font-size: 16px; color: var(--ink);
   background: var(--surface-2); border: 1.5px solid var(--line); border-radius: 12px;
 }
-::placeholder { color: var(--muted); opacity: 1; }
 input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent); }
 button:focus-visible, .btn:focus-within { outline: 3px solid var(--acc); outline-offset: 2px; }
 input[type="date"] { min-width: 0; -webkit-appearance: none; appearance: none; }
