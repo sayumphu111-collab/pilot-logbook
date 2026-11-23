@@ -29,8 +29,8 @@ export function isoToSerial(iso) {
 const excelNumber = (v) => Number.isFinite(Number(v)) ? String(Number(Number(v).toPrecision(15))) : '0';
 const numXml = (ref, s, v) => `<c r="${ref}"${s}><v>${excelNumber(v)}</v></c>`;
 const strXml = (ref, s, v) => `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
-const fmlXml = (ref, s, f) => `<c r="${ref}"${s}><f>${f}</f></c>`; // สูตร (ไม่ cached — Excel/Sheets คำนวณตอนเปิดไฟล์)
-const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : (v && typeof v === 'object' && 'f' in v) ? fmlXml(ref, s, v.f) : strXml(ref, s, v));
+const fmlXml = (ref, s, f, cached) => `<c r="${ref}"${s}><f>${f}</f>${cached != null ? `<v>${excelNumber(cached)}</v>` : ''}</c>`; // สูตร (+ cached value ให้อ่านกลับได้; Excel จะ recompute ตอนเปิด)
+const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : (v && typeof v === 'object' && 'f' in v) ? fmlXml(ref, s, v.f, v.cached) : strXml(ref, s, v));
 
 // ---------- ใส่ค่าเข้าชีต ----------
 // values: { 'B4': 45486, 'C4': 'AW139', ... }
@@ -121,7 +121,7 @@ export function openingValues(o) {
   // (SIM มีคอลัมน์ Flight Duty ใต้ CP/PI เท่านั้น) → AG23 = S23; แถว 24 (Total Forward) จะตามเอง
   for (let i = 0; i < 8; i++) {
     if (AIRCRAFT[i] && SIMS.has(AIRCRAFT[i])) {
-      v[`${colLetters(colNum('Z') + i)}23`] = { f: `${colLetters(colNum('L') + i)}23` };
+      v[`${colLetters(colNum('Z') + i)}23`] = { f: `${colLetters(colNum('L') + i)}23`, cached: num(t.byType?.[AIRCRAFT[i]]) };
     }
   }
   return v;
