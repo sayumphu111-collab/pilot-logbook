@@ -1,6 +1,6 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, addTotals, isDefaultAircraft, num, slotDuties } from './logic.js';
+import { AIRCRAFT, CONDS, PAGE_SIZE, SIMS, addTotals, isDefaultAircraft, num, slotDuties } from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -29,7 +29,8 @@ export function isoToSerial(iso) {
 const excelNumber = (v) => Number.isFinite(Number(v)) ? String(Number(Number(v).toPrecision(15))) : '0';
 const numXml = (ref, s, v) => `<c r="${ref}"${s}><v>${excelNumber(v)}</v></c>`;
 const strXml = (ref, s, v) => `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
-const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : strXml(ref, s, v));
+const fmlXml = (ref, s, f, cached) => `<c r="${ref}"${s}><f>${f}</f>${cached != null ? `<v>${excelNumber(cached)}</v>` : ''}</c>`; // สูตร (+ cached value ให้อ่านกลับได้; Excel จะ recompute ตอนเปิด)
+const cellXml = (ref, s, v) => (typeof v === 'number' ? numXml(ref, s, v) : (v && typeof v === 'object' && 'f' in v) ? fmlXml(ref, s, v.f, v.cached) : strXml(ref, s, v));
 
 // ---------- ใส่ค่าเข้าชีต ----------
 // values: { 'B4': 45486, 'C4': 'AW139', ... }
@@ -71,7 +72,7 @@ export function fillSheetXml(xml, values) {
 // ---------- ค่าของแต่ละหน้า (ช่องที่ผู้ใช้กรอกในต้นฉบับ) ----------
 // B=วันที่ C=แบบ D=หมายเลข E=ต้นทาง F=ปลายทาง G=ภารกิจ H=หน้าที่ I=ชั่วโมง
 // T=X-Country U=Night Un-aided V=NVG W=IFR Training X=IMC
-// BN–BO=SOLO (สูตรคำนวณเอง) BP=หมายเหตุ
+// BC–BD=SOLO (สูตรคำนวณเอง) BE=หมายเหตุ
 const COND_COL = { xc: 'T', nightUn: 'U', nvg: 'V', ifr: 'W', imc: 'X' };
 
 export function pageValues(page) {
@@ -87,7 +88,7 @@ export function pageValues(page) {
     if (f.duty) v[`H${r}`] = f.duty;
     v[`I${r}`] = num(f.hours);
     for (const c of CONDS) if (num(f[c.key]) > 0) v[`${COND_COL[c.key]}${r}`] = num(f[c.key]);
-    if (f.note) v[`BP${r}`] = f.note;
+    if (f.note) v[`BE${r}`] = f.note;
   });
   return v;
 }
@@ -95,13 +96,13 @@ export function pageValues(page) {
 // ---------- ยอดยกมา (S1 แถว 23) ----------
 const DUTY_BLOCKS = [
   ['CP/PI', 'Z', 8],
-  ['PC', 'AH', 8],
-  ['MP', 'AP', 8],
-  ['IP', 'AX', 8],
-  ['SP', 'BF', 8],
+  ['PC', 'AH', 6],
+  ['MP', 'AN', 5],
+  ['IP', 'AS', 5],
+  ['SP', 'AX', 5],
 ];
-// SOLO: BN=ช่อง5, BO=ช่อง6
-const SOLO_COLS = { 5: 'BN', 6: 'BO' };
+// SOLO: BC=ช่อง5, BD=ช่อง6
+const SOLO_COLS = { 5: 'BC', 6: 'BD' };
 export function openingValues(o) {
   const t = o || {};
   const v = {};
@@ -115,6 +116,13 @@ export function openingValues(o) {
   for (const [slot, col] of Object.entries(SOLO_COLS)) {
     const i = Number(slot);
     put(col, AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|SOLO`] : 0);
+  }
+  // SIM: ให้ "Flight Duty" (CP/PI×SIM) อ้างอิง "Aircraft Type" ของ SIM ที่แถว Total Last Page
+  // (SIM มีคอลัมน์ Flight Duty ใต้ CP/PI เท่านั้น) → AG23 = S23; แถว 24 (Total Forward) จะตามเอง
+  for (let i = 0; i < 8; i++) {
+    if (AIRCRAFT[i] && SIMS.has(AIRCRAFT[i])) {
+      v[`${colLetters(colNum('Z') + i)}23`] = { f: `${colLetters(colNum('L') + i)}23`, cached: num(t.byType?.[AIRCRAFT[i]]) };
+    }
   }
   return v;
 }
@@ -174,9 +182,9 @@ export function renameSharedStrings(sst, slotNames) {
 
 // ชีต Summary: เขียนแถวแบบอากาศยาน (แถว 5–12) ใหม่ตามรายการของผู้ใช้
 // SOLO อยู่ในคอลัมน์ C ของ Summary และอ้าง BC/BD ของ S50 เท่านั้น (ช่อง 5 และ 6)
-const DUTY_FIRST_COL = { 'CP/PI': 'Z', PC: 'AH', MP: 'AP', IP: 'AX', SP: 'BF' };
+const DUTY_FIRST_COL = { 'CP/PI': 'Z', PC: 'AH', MP: 'AN', IP: 'AS', SP: 'AX' };
 const DUTY_SUMMARY_COL = { SOLO: 'C', 'CP/PI': 'D', PC: 'E', MP: 'F', IP: 'G', SP: 'H' };
-const SOLO_SHEET_COL = { 5: 'BN', 6: 'BO' };
+const SOLO_SHEET_COL = { 5: 'BC', 6: 'BD' };
 
 function dutySheetRef(duty, slotIndex) {
   if (duty === 'SOLO') {
@@ -250,10 +258,10 @@ function setInlineHeader(xml, ref, value) {
 const HEADER_GROUPS = [
   ['L', 8, 0],       // Aircraft type totals
   ['Z', 8, 0],       // CP/PI
-  ['AH', 8, 0],      // PC
-  ['AP', 8, 0],      // MP
-  ['AX', 8, 0],      // IP
-  ['BF', 8, 0],      // SP
+  ['AH', 6, 0],      // PC
+  ['AN', 5, 0],      // MP
+  ['AS', 5, 0],      // IP
+  ['AX', 5, 0],      // SP
 ];
 function retargetInlineHeaders(xml, aircraft) {
   for (const [start, count, offset] of HEADER_GROUPS) {
@@ -263,8 +271,8 @@ function retargetInlineHeaders(xml, aircraft) {
     }
   }
   // SOLO รองรับเฉพาะช่องแบบอากาศยานลำดับ 5 และ 6 ในโครงสร้าง Excel นี้
-  xml = setInlineHeader(xml, 'BN3', aircraft[5]?.name || '');
-  xml = setInlineHeader(xml, 'BO3', aircraft[6]?.name || '');
+  xml = setInlineHeader(xml, 'BC3', aircraft[5]?.name || '');
+  xml = setInlineHeader(xml, 'BD3', aircraft[6]?.name || '');
   return xml;
 }
 
@@ -293,8 +301,7 @@ export async function customizeTemplate({ getText, setText }, aircraft) {
   } catch (e) {
     if (!/not found|ENOENT|missing|undefined/i.test(String(e?.message || e))) throw e;
   }
-  // หมายเหตุ: ไม่เขียนชีต Summary อีกต่อไป — แม่แบบ v1.1+ มี Summary ที่สร้างใน Excel
-  // สูตรของ Summary อ้างอิงคอลัมน์ตำแหน่งของ S50 จึงคำนวณต่อเองตอนเปิดไฟล์ (รองรับการเปลี่ยนชื่อแบบด้วยตำแหน่ง)
+  if (paths.Summary) setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
 }
 
 // ---------- หา path ของชีตจากชื่อ ----------
@@ -321,10 +328,13 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
   if (pages.length > MAX_PAGES) {
     throw new Error(`ข้อมูลเกิน ${MAX_PAGES * PAGE_SIZE} รายการ (${MAX_PAGES} ชีต) — ต้องเพิ่มชีตในแม่แบบก่อน`);
   }
-  // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์ในแม่แบบก่อนกรอก
-  // (ชีต Summary สร้าง/คำนวณในไฟล์แม่แบบ ไม่ถูกเขียนทับด้วยโค้ดอีกต่อไป)
+  // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์/Summary ในแม่แบบก่อนกรอก (customizeTemplate สร้าง Summary ให้ด้วย)
   if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+  // ค่าเริ่มต้น: แม่แบบเดิมเรียงแถว/จัดชนิดเครื่องยนต์ไม่ตรง DEFAULT_AIRCRAFT และไม่มีแถว SIM → ต้องเขียน Summary ใหม่ให้ตรงเสมอ
+  if (aircraft && isDefaultAircraft(aircraft) && paths.Summary) {
+    setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
+  }
   // ทุกชีตใช้ช่อง Hours เป็นตัวเลขทศนิยม 0–24 ไม่ใช่ dropdown 0.1–5.0
   for (let n = 1; n <= MAX_PAGES; n++) {
     const path = paths[`S${n}`];
