@@ -108,12 +108,16 @@ function renderTypeChips(extra = null) {
   syncChips();
 }
 
-// หน้าที่ที่เลือกได้ = ตามคอลัมน์ที่ช่อง(ลำดับ)นั้นรองรับในตารางแม่แบบ (slotDuties รวม SOLO เฉพาะช่อง 5–6)
-// เช่น ช่อง 7 (SIM) → มีแค่ CP/PI หน้าที่เดียว
+// หน้าที่ที่ "เลือกได้" ในฟอร์ม = คอลัมน์ที่แม่แบบรองรับ (slotDuties) + หน้าที่ที่อนุญาตให้บันทึกเพิ่มชั่วคราว
+// ช่อง 6 (EN48): เพิ่ม PC/MP/IP/SP, ช่อง 7 (SIM): เพิ่ม PC/IP/SP — ชั่วโมงนับในยอดรวม/หน้าสรุปของแอปครบ
+// แต่แม่แบบยังไม่มีคอลัมน์ → ตอนส่งออกจะเข้า coverageGaps (แอปเตือน) จนกว่าจะเพิ่มคอลัมน์ในแม่แบบ
+// หมายเหตุ: coverageGaps / rebuildSummary / หน้าตั้งยอดยกมา ยังใช้ slotDuties (ความจริงของแม่แบบ) ไม่เปลี่ยน
+const EXTRA_LOGGABLE_DUTIES = { 6: ['PC', 'MP', 'IP', 'SP'], 7: ['PC', 'IP', 'SP'] };
 function allowedDuties(type) {
   const i = L.AIRCRAFT.indexOf(type);
   if (i < 0) return L.DUTIES; // ไม่รู้จักแบบ → ให้เลือกได้ทุกหน้าที่
-  return L.slotDuties(i);
+  const set = new Set([...L.slotDuties(i), ...(EXTRA_LOGGABLE_DUTIES[i] || [])]);
+  return L.DUTIES.filter((d) => set.has(d)); // เรียงตามลำดับมาตรฐานของ DUTIES
 }
 
 function renderDutyChips(extra = null) {

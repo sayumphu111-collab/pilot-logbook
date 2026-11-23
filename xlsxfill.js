@@ -328,23 +328,13 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
   if (pages.length > MAX_PAGES) {
     throw new Error(`ข้อมูลเกิน ${MAX_PAGES * PAGE_SIZE} รายการ (${MAX_PAGES} ชีต) — ต้องเพิ่มชีตในแม่แบบก่อน`);
   }
-  // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์/Summary ในแม่แบบก่อนกรอก
+  // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์/Summary ในแม่แบบก่อนกรอก (customizeTemplate สร้าง Summary ให้ด้วย)
   if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
-  else if (aircraft) {
-    // ชีต Summary ของต้นฉบับไม่อ้างถึงบางช่อง (เช่น AW149, IP, SP) ถ้ามีชั่วโมงอยู่ตรงนั้นให้เขียนแถว Summary ใหม่ให้ครบ
-    // (ถ้าไม่มี จะคงไฟล์ต้นฉบับไว้ทุกประการ)
-    const total = pages.length ? pages[pages.length - 1].forward : addTotals(opening, null);
-    const FIVE = new Set(['CP/PI', 'PC', 'MP', 'IP', 'SP']);
-    const uncovered = Object.entries(total.byTypeDuty || {}).some(([k, v]) => {
-      const [, duty] = k.split('|');
-      return v > 0 && FIVE.has(duty) && !ORIGINAL_SUMMARY_COVERED.has(k);
-    });
-    if (uncovered) {
-      const sp = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
-      if (sp.Summary) setText(sp.Summary, rebuildSummary(await getText(sp.Summary), aircraft));
-    }
-  }
   const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+  // ค่าเริ่มต้น: แม่แบบเดิมเรียงแถว/จัดชนิดเครื่องยนต์ไม่ตรง DEFAULT_AIRCRAFT และไม่มีแถว SIM → ต้องเขียน Summary ใหม่ให้ตรงเสมอ
+  if (aircraft && isDefaultAircraft(aircraft) && paths.Summary) {
+    setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
+  }
   // ทุกชีตใช้ช่อง Hours เป็นตัวเลขทศนิยม 0–24 ไม่ใช่ dropdown 0.1–5.0
   for (let n = 1; n <= MAX_PAGES; n++) {
     const path = paths[`S${n}`];
