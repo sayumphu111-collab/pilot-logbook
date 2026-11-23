@@ -56,12 +56,13 @@ export function validateAircraft(list) {
 // ในไฟล์ Excel: ช่อง (ลำดับ) ที่ i มีคอลัมน์ "แบบ × หน้าที่" ให้หน้าที่ใดบ้าง
 // ช่อง 0–4 (AW139..UH1): CP/PI PC MP IP SP
 // ช่อง 5 (H269): CP/PI PC SOLO
-// ช่อง 6 (EN48): CP/PI SOLO
-// ช่อง 7 (SIM): CP/PI
+// ช่อง 6 (EN48): CP/PI PC MP IP SP SOLO
+// ช่อง 7 (SIM): CP/PI PC IP SP
 export function slotDuties(i) {
   if (i < 5) return ['CP/PI', 'PC', 'MP', 'IP', 'SP'];
   if (i === 5) return ['CP/PI', 'PC', 'SOLO'];
-  if (i === 6) return ['CP/PI', 'SOLO'];
+  if (i === 6) return ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
+  if (i === 7) return ['CP/PI', 'PC', 'IP', 'SP'];
   return ['CP/PI'];
 }
 
@@ -142,16 +143,16 @@ export function addTotals(a, b) {
 }
 
 // ยอดยกมา (Opening balance) = ค่าที่พิมพ์ไว้ใน "Total Last Page" ของชีต S1
-// แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BB=แบบ x หน้าที่ BC..BD=SOLO
+// แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BM=แบบ x หน้าที่ BN..BO=SOLO
 const DUTY_BLOCKS = [
   ['CP/PI', 25, 8],
-  ['PC', 33, 6],
-  ['MP', 39, 5],
-  ['IP', 44, 5],
-  ['SP', 49, 5],
+  ['PC', 33, 8],
+  ['MP', 41, 8],
+  ['IP', 49, 8],
+  ['SP', 57, 8],
 ];
-// SOLO มีแค่ 2 คอลัมน์: BC=ช่อง5 (H269), BD=ช่อง6 (EN48) — index 0-based ของแถว = 54, 55
-const SOLO_OPENING = [[54, 5], [55, 6]];
+// SOLO มีแค่ 2 คอลัมน์: BN=ช่อง5 (H269), BO=ช่อง6 (EN48) — index 0-based ของแถว = 65, 66
+const SOLO_OPENING = [[65, 5], [66, 6]];
 // names = ชื่อแบบของแต่ละช่องในไฟล์ (ค่าเริ่มต้น = รายการปัจจุบัน)
 export function parseOpening(row, names = AIRCRAFT) {
   const t = emptyTotals();
@@ -314,8 +315,8 @@ export function rowToFlight(row) {
   if (!type) return null;
   // รับทั้ง number และ string ตัวเลขจาก Excel (เช่น "1.5")
   const n = (v) => Math.max(0, num(v));
-  // หมายเหตุ: แม่แบบใหม่ = BE (index 56), แม่แบบเก่า = BC (index 54)
-  const note = clean(row[56]) || clean(row[54]);
+  // หมายเหตุ: แม่แบบ v1.1+ = BP (index 67), รุ่นก่อน = BE (index 56), เก่าสุด = BC (index 54)
+  const note = clean(row[67]) || clean(row[56]) || clean(row[54]);
   let mission = clean(row[6]);
   if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training'; // แก้สะกดเดิมในไฟล์
   return {
