@@ -521,13 +521,16 @@ function renderList() {
 function renderSummary() {
   const t = totalsNow();
   const types = [...new Set([...L.AIRCRAFT, ...Object.keys(t.byType)])].filter((x) => t.byType[x]);
-  const duties = L.DUTIES.filter((d) => types.some((ty) => t.byTypeDuty[`${ty}|${d}`]));
+  // ไม่เอา Simulator (SIM) มาคำนวณใน "ผลรวมตามหน้าที่" — ตารางแบบ × หน้าที่ใช้เฉพาะแบบที่ไม่ใช่ SIM
+  const dutyTypes = types.filter((ty) => !L.SIMS.has(ty));
+  const duties = L.DUTIES.filter((d) => dutyTypes.some((ty) => t.byTypeDuty[`${ty}|${d}`]));
   if (!duties.length) duties.push('CP/PI');
   const cell = (v) => (v ? L.fmt(v) : '–');
 
-  const rows = types.map((ty) => `<tr><td>${esc(ty)}</td>${duties.map((d) => `<td>${cell(t.byTypeDuty[`${ty}|${d}`])}</td>`).join('')}<td><b>${L.fmt(t.byType[ty])}</b></td></tr>`).join('');
-  // แถวรวม: ผลรวมชั่วโมงตามแต่ละคอลัมน์หน้าที่
-  const dutyTotals = duties.map((d) => types.reduce((a, ty) => a + L.num(t.byTypeDuty[`${ty}|${d}`]), 0));
+  const rows = dutyTypes.map((ty) => `<tr><td>${esc(ty)}</td>${duties.map((d) => `<td>${cell(t.byTypeDuty[`${ty}|${d}`])}</td>`).join('')}<td><b>${L.fmt(t.byType[ty])}</b></td></tr>`).join('');
+  // แถวรวม: ผลรวมชั่วโมงตามแต่ละคอลัมน์หน้าที่ (ไม่รวม SIM)
+  const dutyTotals = duties.map((d) => dutyTypes.reduce((a, ty) => a + L.num(t.byTypeDuty[`${ty}|${d}`]), 0));
+  const simDutyHours = types.filter((ty) => L.SIMS.has(ty)).reduce((a, ty) => a + L.num(t.byType[ty]), 0);
 
   const today = L.todayISO();
   const since = (days) => {
@@ -548,7 +551,7 @@ function renderSummary() {
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
         <tfoot><tr><td>รวม</td>${dutyTotals.map((v) => `<td><b>${v ? L.fmt(v) : '–'}</b></td>`).join('')}<td><b>${L.fmt(t.hours)}</b></td></tr></tfoot>
-      </table></div></section>
+      </table></div>${simDutyHours ? `<p class="muted small" style="margin:8px 0 0">หมายเหตุ: ชั่วโมงเครื่องฝึกจำลอง (SIM) ${L.fmt(simDutyHours)} ชม. ไม่นับในตาราง/ผลรวมแยกตามหน้าที่ แต่นับรวมในชั่วโมงบินรวมทั้งหมด</p>` : ''}</section>
     <section class="card"><h2>ประเภทการบิน</h2><div class="stats">
       ${stat('Single engine', t.single)}${stat('Multi engine', t.multi)}
       ${stat('Simulator', t.sim)}${stat('X-Country', t.xc)}

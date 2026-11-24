@@ -321,6 +321,20 @@ export function sheetPaths(workbookXml, relsXml) {
 
 // ---------- รวมทั้งหมด ----------
 // getText(path) → Promise<string>, setText(path, string)
+// บังคับให้ Excel คำนวณสูตรทั้งหมดตอนเปิดไฟล์ (แอปเขียนสูตรแบบไม่มี cached value)
+// แก้เคสแม่แบบมี calcMode="manual" ที่ทำให้ Excel แสดงค่าว่าง/0 (แต่ Google Sheets คำนวณให้อยู่)
+export function ensureFullCalcOnLoad(wbXml) {
+  if (/<calcPr\b/.test(wbXml)) {
+    return wbXml.replace(/<calcPr\b[^>]*\/?>/, (m) => {
+      let attrs = m.replace(/^<calcPr\b/, '').replace(/\/?>$/, '');
+      attrs = attrs.replace(/\s*calcMode="[^"]*"/, ''); // ตัด manual ออก
+      if (!/fullCalcOnLoad=/.test(attrs)) attrs += ' fullCalcOnLoad="1"';
+      return `<calcPr${attrs}/>`;
+    });
+  }
+  return wbXml.replace(/<\/workbook>/, '<calcPr calcId="124519" fullCalcOnLoad="1"/></workbook>');
+}
+
 export async function fillWorkbook(io, pages, opening, aircraft = null) {
   const { getText, setText } = io;
   if (pages.length > MAX_PAGES) {
@@ -329,7 +343,9 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
   // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์ในแม่แบบก่อนกรอก
   // (ชีต Summary สร้าง/คำนวณในไฟล์แม่แบบ ไม่ถูกเขียนทับด้วยโค้ดอีกต่อไป)
   if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
-  const paths = sheetPaths(await getText('xl/workbook.xml'), await getText('xl/_rels/workbook.xml.rels'));
+  const wbXml0 = await getText('xl/workbook.xml');
+  const paths = sheetPaths(wbXml0, await getText('xl/_rels/workbook.xml.rels'));
+  setText('xl/workbook.xml', ensureFullCalcOnLoad(wbXml0)); // ให้ Excel recalc ตอนเปิด
   // ทุกชีตใช้ช่อง Hours เป็นตัวเลขทศนิยม 0–24 ไม่ใช่ dropdown 0.1–5.0
   for (let n = 1; n <= MAX_PAGES; n++) {
     const path = paths[`S${n}`];
