@@ -87,13 +87,17 @@ async function createFirebaseBackend() {
   const streams = Object.fromEntries(SYNC_STREAMS.map((k) => [k, { fromCache: null, pending: false }]));
   let pendingOps = 0;
   let notified = false;
+  let lastError = null;
 
   const resetSyncState = () => {
     for (const s of Object.values(streams)) { s.fromCache = null; s.pending = false; }
     pendingOps = 0;
     notified = false;
+    lastError = null;
   };
   const checkSynced = () => {
+    // P2-0: ถ้าเคยเจอ error ให้ค้างสถานะ "ผิดพลาด" จนกว่า snapshot จาก server จะสำเร็จ
+    if (lastError) { cb?.onStatus?.('error'); return; }
     const status = computeSyncStatus(streams, pendingOps);
     cb?.onStatus?.(status);
     if (status === 'synced' && !notified) { notified = true; cb.onSynced?.(); }
@@ -115,7 +119,11 @@ async function createFirebaseBackend() {
     if (code === 'resource-exhausted') return 'โควตาฟรีของวันนี้เต็ม ข้อมูลจะซิงค์ได้อีกครั้งในวันถัดไป';
     return e?.message || String(e);
   };
-  const fail = (e) => cb?.onError?.(friendly(e));
+  const fail = (e) => {
+    lastError = friendly(e);
+    cb?.onError?.(lastError);
+    cb?.onStatus?.('error');
+  };
 
   function listen() {
     unsubs.forEach((u) => u());
@@ -123,8 +131,24 @@ async function createFirebaseBackend() {
     resetSyncState();
     checkSynced(); // ยังไม่มี snapshot → offline ทันที แม้เคย synced มาก่อน
 
+    const handlers = {
+      flights: (snap) => cb.onFlights(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      config: (snap) => {
+        let c = null;
+        try { c = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
+        cb.onConfig(c);
+      },
+      opening: (snap) => {
+        let o = null;
+        try { o = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
+        cb.onOpening(o);
+      },
+      quarantine: (snap) => cb.onQuarantine?.(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    };
+
     const watch = (key, ref, onValue) => {
       unsubs.push(fs.onSnapshot(ref, { includeMetadataChanges: true }, (snap) => {
+        lastError = null;
         onValue(snap);
         streams[key].fromCache = snap.metadata.fromCache;
         streams[key].pending = snap.metadata.hasPendingWrites;
@@ -132,22 +156,27 @@ async function createFirebaseBackend() {
       }, fail));
     };
 
-    watch('flights', flightsCol(), (snap) => {
-      cb.onFlights(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-    watch('config', configDoc(), (snap) => {
-      let c = null;
-      try { c = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
-      cb.onConfig(c);
-    });
-    watch('opening', openingDoc(), (snap) => {
-      let o = null;
-      try { o = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
-      cb.onOpening(o);
-    });
-    watch('quarantine', quarantineCol(), (snap) => {
-      cb.onQuarantine?.(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
+    watch('flights', flightsCol(), handlers.flights);
+    watch('config', configDoc(), handlers.config);
+    watch('opening', openingDoc(), handlers.opening);
+    watch('quarantine', quarantineCol(), handlers.quarantine);
+
+    // P2-0: บังคับอ่านจาก server ครั้งหนึ่งตอนเปิดแอป/เปลี่ยนผู้ใช้
+    // กันเคสแคชในเบราว์เซอร์หรือ Service Worker ยังเสิร์ฟข้อมูลเก่า (doc มีอยู่บน server แต่แอปไม่โชว์)
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    Promise.all([
+      fs.getDocsFromServer(flightsCol()),
+      fs.getDocFromServer(configDoc()),
+      fs.getDocFromServer(openingDoc()),
+      fs.getDocsFromServer(quarantineCol()),
+    ]).then(([a, b, c, d]) => {
+      lastError = null;
+      handlers.flights(a);
+      handlers.config(b);
+      handlers.opening(c);
+      handlers.quarantine(d);
+      checkSynced();
+    }).catch(fail);
   }
 
   return {

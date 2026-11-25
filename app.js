@@ -68,7 +68,7 @@ function renderHeader() {
   $('#hobbs').setAttribute('aria-label', `ชั่วโมงบินรวม ${L.fmt(total)}`);
 
   const chip = $('#sync');
-  const labels = { local: 'ในเครื่อง', synced: 'ซิงค์แล้ว', pending: 'กำลังซิงค์', offline: 'ออฟไลน์' };
+  const labels = { local: 'ในเครื่อง', synced: 'ซิงค์แล้ว', pending: 'กำลังซิงค์', offline: 'ออฟไลน์', error: 'ผิดพลาด' };
   chip.hidden = !state.status || !state.user;
   chip.className = `chip-status ${state.status}`;
   chip.textContent = labels[state.status] || '';
@@ -1314,7 +1314,7 @@ async function main() {
         pendingSyncToast = false;
         toast('ซิงค์ขึ้นเซิร์ฟเวอร์แล้ว', 2500);
       }
-      if (s === 'local') pendingSyncToast = false;
+      if (s === 'local' || s === 'error') pendingSyncToast = false;
     },
     onError(msg) { pendingSyncToast = false; toast(msg); },
   });
@@ -1324,5 +1324,5 @@ async function main() {
 main();
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
 }
