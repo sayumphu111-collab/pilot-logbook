@@ -4,92 +4,143 @@ export const DUTIES = ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
 // รายการภารกิจ (สะกด Flight Training ให้ถูกต้อง; ข้อมูลเก่าที่สะกด Trainning ยังนำเข้าได้)
 export const MISSIONS = ['Ferry Flight', 'Parachute', 'Air Transportation', 'Air Medivac', 'Flight Training', 'Special Operation', 'Standardization', 'Other', 'VVIP', 'VIP'];
 
-// ---------- รายการแบบอากาศยาน (ผู้ใช้กำหนดเองได้ สูงสุด 8 แบบ = จำนวนช่องในแม่แบบ Excel) ----------
-// kind: single = เครื่องยนต์เดียว, multi = หลายเครื่องยนต์, sim = เครื่องฝึกบินจำลอง
-export const MAX_AIRCRAFT = 8;
-export const KIND_LABEL = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกจำลอง (SIM)' };
+// ---------- Aircraft Configuration v2 ----------
+// Stable IDs are primary keys; names remain as compatibility/display fields.
+export const MAX_AIRCRAFT = Infinity; // App data is not limited by the legacy 8-slot Excel template.
+export const KIND_LABEL = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกบินจำลอง (SIM)' };
 export const KIND_SHORT = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกจำลอง' };
-export const DEFAULT_AIRCRAFT = [
-  { name: 'AW139', kind: 'multi' },
-  { name: 'AW149', kind: 'multi' },
-  { name: 'AS550', kind: 'single' },
-  { name: 'BELL212', kind: 'multi' },
-  { name: 'UH1', kind: 'single' },
-  { name: 'H269', kind: 'single' },
-  { name: 'EN48', kind: 'single' },
-  { name: 'SIM', kind: 'sim' },
+const LEGACY_DEFAULTS = [
+  { name: 'AW139', kind: 'multi', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP'] },
+  { name: 'AW149', kind: 'multi', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP'] },
+  { name: 'AS550', kind: 'single', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP'] },
+  { name: 'BELL212', kind: 'multi', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP'] },
+  { name: 'UH1', kind: 'single', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP'] },
+  { name: 'H269', kind: 'single', duties: ['CP/PI', 'PC', 'SOLO'] },
+  { name: 'EN48', kind: 'single', duties: ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'] },
+  { name: 'SIM', kind: 'sim', duties: ['CP/PI', 'PC', 'IP', 'SP'] },
 ];
-// อ็อบเจกต์ชุดนี้ถูกแก้ในที่เดิม (ผู้ที่ import ไปเห็นค่าล่าสุดเสมอ)
+const slugId = (name) => `ac_${String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown'}`;
+export const DEFAULT_AIRCRAFT = LEGACY_DEFAULTS.map((a) => ({ ...a, id: slugId(a.name), active: true }));
 export const AIRCRAFT = [];
 export const SINGLE = new Set();
 export const MULTI = new Set();
 export const SIMS = new Set();
+export const AIRCRAFT_BY_ID = new Map();
+export const AIRCRAFT_BY_NAME = new Map();
+
+export function normalizeAircraft(list = []) {
+  const used = new Set();
+  return list.map((a, i) => {
+    const name = String(a?.name ?? '').trim().toUpperCase();
+    let id = String(a?.id || slugId(name));
+    if (used.has(id)) id = `${id}_${i + 1}`;
+    used.add(id);
+    const legacyDuties = LEGACY_DEFAULTS.find((x) => x.name === name)?.duties || DUTIES;
+    const duties = [...new Set((Array.isArray(a?.duties) ? a.duties : legacyDuties).map((d) => String(d).trim().toUpperCase()).filter((d) => DUTIES.includes(d)))];
+    return { id, name, kind: ['single', 'multi', 'sim'].includes(a?.kind) ? a.kind : 'single', duties, active: a?.active !== false, sortOrder: Number.isFinite(Number(a?.sortOrder)) ? Number(a.sortOrder) : i + 1 };
+  });
+}
 
 export function setAircraft(list) {
-  AIRCRAFT.length = 0; SINGLE.clear(); MULTI.clear(); SIMS.clear();
-  for (const a of list) {
+  const normalized = normalizeAircraft(list);
+  AIRCRAFT.length = 0; SINGLE.clear(); MULTI.clear(); SIMS.clear(); AIRCRAFT_BY_ID.clear(); AIRCRAFT_BY_NAME.clear();
+  for (const a of normalized) {
     AIRCRAFT.push(a.name);
+    AIRCRAFT_BY_ID.set(a.id, a);
+    AIRCRAFT_BY_NAME.set(a.name, a);
     (a.kind === 'multi' ? MULTI : a.kind === 'sim' ? SIMS : SINGLE).add(a.name);
   }
+  return normalized;
 }
 export const kindOf = (name) => (MULTI.has(name) ? 'multi' : SIMS.has(name) ? 'sim' : 'single');
-export const getAircraft = () => AIRCRAFT.map((name) => ({ name, kind: kindOf(name) }));
-export const sameAircraft = (a, b) => a.length === b.length && a.every((x, i) => x.name === b[i].name && x.kind === b[i].kind);
-export const isDefaultAircraft = (list) => sameAircraft(list, DEFAULT_AIRCRAFT);
+export const getAircraft = () => AIRCRAFT.map((name) => ({ ...(AIRCRAFT_BY_NAME.get(name) || {}), name, kind: kindOf(name) }));
+export const aircraftByName = (name) => AIRCRAFT_BY_NAME.get(String(name || '').trim().toUpperCase()) || null;
+export const aircraftById = (id) => AIRCRAFT_BY_ID.get(String(id || '')) || null;
+export const dutiesForAircraft = (typeOrId) => {
+  const a = AIRCRAFT_BY_ID.get(String(typeOrId || '')) || AIRCRAFT_BY_NAME.get(String(typeOrId || '').trim().toUpperCase());
+  return a ? [...a.duties] : [...DUTIES];
+};
+export const sameAircraft = (a, b) => { const aa = normalizeAircraft(a); const bb = normalizeAircraft(b); return aa.length === bb.length && aa.every((x, i) => x.id === bb[i].id && x.name === bb[i].name && x.kind === bb[i].kind && x.active === bb[i].active && x.sortOrder === bb[i].sortOrder && JSON.stringify(x.duties) === JSON.stringify(bb[i].duties)); };
+export const isDefaultAircraft = (list) => sameAircraft(normalizeAircraft(list), DEFAULT_AIRCRAFT);
 setAircraft(DEFAULT_AIRCRAFT);
 
 export const NAME_RE = /^[A-Z0-9][A-Z0-9 ._\/-]{0,11}$/;
 export function validateAircraft(list) {
   if (!list.length) return 'ต้องมีแบบอากาศยานอย่างน้อย 1 แบบ';
-  if (list.length > MAX_AIRCRAFT) return `ใส่ได้สูงสุด ${MAX_AIRCRAFT} แบบ (ตามจำนวนช่องในไฟล์ Excel)`;
+  if (!list.some((a) => a.active !== false)) return 'ต้องเปิดใช้งาน Aircraft อย่างน้อย 1 แบบ';
   const seen = new Set();
+  const ids = new Set();
   for (const a of list) {
     if (!a.name) return 'มีแถวที่ยังไม่ได้ใส่ชื่อ';
     if (!NAME_RE.test(a.name)) return `ชื่อ “${a.name}” ใช้ไม่ได้ — ใช้ตัวอักษร A–Z ตัวเลข และ - . / เว้นวรรค ได้ไม่เกิน 12 ตัว`;
     if (seen.has(a.name)) return `ชื่อ “${a.name}” ซ้ำกัน`;
     seen.add(a.name);
+    if (a.id && ids.has(a.id)) return `รหัส Aircraft “${a.id}” ซ้ำกัน`;
+    if (a.id) ids.add(a.id);
     if (!['single', 'multi', 'sim'].includes(a.kind)) return `เลือกชนิดเครื่องยนต์ของ ${a.name}`;
+    if (!Array.isArray(a.duties) || !a.duties.length || a.duties.some((d) => !DUTIES.includes(d))) return `กำหนด Flight Duty ของ ${a.name} ให้ถูกต้อง`;
   }
   return '';
 }
 
-// ในไฟล์ Excel: ช่อง (ลำดับ) ที่ i มีคอลัมน์ "แบบ × หน้าที่" ให้หน้าที่ใดบ้าง
-// ช่อง 0–4 (AW139..UH1): CP/PI PC MP IP SP
-// ช่อง 5 (H269): CP/PI PC SOLO
-// ช่อง 6 (EN48): CP/PI PC MP IP SP SOLO
-// ช่อง 7 (SIM): CP/PI PC IP SP
-export function slotDuties(i) {
-  if (i < 5) return ['CP/PI', 'PC', 'MP', 'IP', 'SP'];
-  if (i === 5) return ['CP/PI', 'PC', 'SOLO'];
-  if (i === 6) return ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
-  if (i === 7) return ['CP/PI', 'PC', 'IP', 'SP'];
-  return ['CP/PI'];
-}
+// Legacy workbook slot mapping is retained only for Excel compatibility checks.
+export function slotDuties(i) { return DEFAULT_AIRCRAFT[i]?.duties || ['CP/PI']; }
+export function soloAircraftNames() { return new Set(getAircraft().filter((a) => a.duties.includes('SOLO')).map((a) => a.name)); }
+export function isSoloAllowed(type) { return dutiesForAircraft(type).includes('SOLO'); }
 
-// SOLO ในไฟล์ Excel อยู่คอลัมน์ BC/BD = ช่องลำดับ 5 และ 6 (ชื่อตามรายการผู้ใช้หลัง rename)
-export function soloAircraftNames() {
-  return new Set([AIRCRAFT[5], AIRCRAFT[6]].filter(Boolean).map((n) => String(n).toUpperCase()));
+// A value is valid only when it is an exact 0.1-hour increment (within FP tolerance).
+export function hoursToTenths(value) {
+  const n = num(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const scaled = n * 10;
+  const rounded = Math.round(scaled);
+  return Math.abs(scaled - rounded) <= 1e-8 ? rounded : null;
 }
-export function isSoloAllowed(type) {
-  return soloAircraftNames().has(String(type || '').trim().toUpperCase());
-}
+export const isValidHourIncrement = (value, { allowZero = false, max = Infinity } = {}) => {
+  const n = num(value);
+  return (allowZero || n > 0) && n <= max && hoursToTenths(n) !== null;
+};
+const addHours = (a, b) => ((hoursToTenths(a) ?? 0) + (hoursToTenths(b) ?? 0)) / 10;
 
-// เที่ยวบินที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ยังนับในชั่วโมงรวมตามปกติ)
 export function coverageGaps(flights, opening = null) {
   let n = 0;
-  const supported = (type, duty) => {
-    const i = AIRCRAFT.indexOf(type);
-    return i >= 0 && slotDuties(i).includes(duty);
-  };
-  for (const f of flights) if (!supported(f.type, f.duty)) n++;
+  const supported = (type, duty) => { const a = aircraftById(type) || aircraftByName(type); return !!a && a.duties.includes(duty); };
+  for (const f of flights) if (!supported(f.aircraftId || f.type, f.duty)) n++;
+  const checked = new Set();
   for (const [key, value] of Object.entries(opening?.byTypeDuty || {})) {
     if (num(value) <= 0) continue;
-    const split = key.lastIndexOf('|');
-    const type = key.slice(0, split);
-    const duty = key.slice(split + 1);
+    const split = key.lastIndexOf('|'); const type = key.slice(0, split); const duty = key.slice(split + 1);
+    const a = aircraftByName(type); if (a) checked.add(`${a.id}|${duty}`);
     if (!supported(type, duty)) n++;
   }
+  for (const [id, duties] of Object.entries(opening?.byAircraftDuty || {})) for (const [duty, value] of Object.entries(duties || {})) {
+    if (num(value) > 0 && !checked.has(`${id}|${duty}`) && !supported(id, duty)) n++;
+  }
   return n;
+}
+
+// Coverage of the current fixed 8-slot Excel template (not the flexible app configuration).
+export function excelCoverageGaps(flights, opening = null, aircraft = getAircraft()) {
+  const indexByName = new Map(aircraft.map((a, i) => [a.name, i]));
+  const indexById = new Map(aircraft.map((a, i) => [a.id, i]));
+  const supports = (typeOrId, duty) => {
+    const i = indexById.has(typeOrId) ? indexById.get(typeOrId) : indexByName.get(typeOrId);
+    if (i == null || i >= 8) return false;
+    if (['CP/PI', 'PC', 'MP', 'IP', 'SP'].includes(duty)) return true;
+    return duty === 'SOLO' && (i === 5 || i === 6);
+  };
+  let count = flights.filter((f) => !supports(f.aircraftId || f.type, f.duty)).length;
+  const covered = new Set();
+  for (const [key, value] of Object.entries(opening?.byTypeDuty || {})) {
+    if (num(value) <= 0) continue;
+    const split = key.lastIndexOf('|'); const type = key.slice(0, split); const duty = key.slice(split + 1);
+    const i = indexByName.get(type); if (i != null) covered.add(`${aircraft[i].id}|${duty}`);
+    if (!supports(type, duty)) count++;
+  }
+  for (const [id, duties] of Object.entries(opening?.byAircraftDuty || {})) {
+    for (const [duty, value] of Object.entries(duties || {})) if (num(value) > 0 && !covered.has(`${id}|${duty}`) && !supports(id, duty)) count++;
+  }
+  return count;
 }
 
 export const PAGE_SIZE = 18;
@@ -109,35 +160,43 @@ export const num = (v) => {
 };
 
 export function fmt(x) {
-  // แสดง Decimal Hours โดยตรง (ไม่แปลงเป็นชั่วโมง:นาที) และซ่อน floating-point noise
+  const tenths = hoursToTenths(x);
+  if (tenths !== null) return (tenths / 10).toFixed(1);
   const r = Number(num(x).toPrecision(15));
-  const s = new Intl.NumberFormat('en-US', { useGrouping: false, maximumSignificantDigits: 15 }).format(r);
-  return s.includes('.') ? s : `${s}.0`;
+  return new Intl.NumberFormat('en-US', { useGrouping: false, maximumSignificantDigits: 15 }).format(r);
 }
 
 export function emptyTotals() {
-  return { hours: 0, single: 0, multi: 0, sim: 0, xc: 0, nightUn: 0, nvg: 0, ifr: 0, imc: 0, byType: {}, byTypeDuty: {} };
+  return { hours: 0, single: 0, multi: 0, sim: 0, xc: 0, nightUn: 0, nvg: 0, ifr: 0, imc: 0, byType: {}, byTypeDuty: {}, byAircraftDuty: {} };
 }
 
 export function addFlight(t, f) {
-  const h = num(f.hours);
-  t.hours += h;
-  if (SINGLE.has(f.type)) t.single += h;
-  if (MULTI.has(f.type)) t.multi += h;
-  if (SIMS.has(f.type)) t.sim += h;
-  for (const c of CONDS) t[c.key] += num(f[c.key]);
-  t.byType[f.type] = (t.byType[f.type] || 0) + h;
+  const h10 = hoursToTenths(f.hours);
+  if (h10 === null || h10 <= 0 || h10 > 240) return t;
+  const h = h10 / 10;
+  t.hours = addHours(t.hours, h);
+  if (SINGLE.has(f.type)) t.single = addHours(t.single, h);
+  if (MULTI.has(f.type)) t.multi = addHours(t.multi, h);
+  if (SIMS.has(f.type)) t.sim = addHours(t.sim, h);
+  for (const c of CONDS) t[c.key] = addHours(t[c.key], num(f[c.key]));
+  t.byType[f.type] = addHours(t.byType[f.type] || 0, h);
   const k = `${f.type}|${f.duty}`;
-  t.byTypeDuty[k] = (t.byTypeDuty[k] || 0) + h;
+  t.byTypeDuty[k] = addHours(t.byTypeDuty[k] || 0, h);
+  if (f.aircraftId) { t.byAircraftDuty[f.aircraftId] ||= {}; t.byAircraftDuty[f.aircraftId][f.duty] = addHours(t.byAircraftDuty[f.aircraftId][f.duty] || 0, h); }
   return t;
 }
 
 export function addTotals(a, b) {
   const t = emptyTotals();
-  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = num(a?.[k]) + num(b?.[k]);
+  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = addHours(num(a?.[k]), num(b?.[k]));
+  t._dataIssues = [...(a?._dataIssues || []), ...(b?._dataIssues || [])];
   for (const src of [a, b]) {
-    for (const [k, v] of Object.entries(src?.byType || {})) t.byType[k] = (t.byType[k] || 0) + num(v);
-    for (const [k, v] of Object.entries(src?.byTypeDuty || {})) t.byTypeDuty[k] = (t.byTypeDuty[k] || 0) + num(v);
+    for (const [k, v] of Object.entries(src?.byType || {})) t.byType[k] = addHours(t.byType[k] || 0, num(v));
+    for (const [k, v] of Object.entries(src?.byTypeDuty || {})) t.byTypeDuty[k] = addHours(t.byTypeDuty[k] || 0, num(v));
+    for (const [id, duties] of Object.entries(src?.byAircraftDuty || {})) {
+      t.byAircraftDuty[id] ||= {};
+      for (const [duty, value] of Object.entries(duties || {})) t.byAircraftDuty[id][duty] = addHours(t.byAircraftDuty[id][duty] || 0, num(value));
+    }
   }
   return t;
 }
@@ -163,12 +222,12 @@ export function parseOpening(row, names = AIRCRAFT) {
   for (const [duty, start, count] of DUTY_BLOCKS) {
     for (let i = 0; i < count; i++) {
       const v = n(start + i);
-      if (v && names[i]) t.byTypeDuty[`${names[i]}|${duty}`] = v;
+      if (v && names[i]) { t.byTypeDuty[`${names[i]}|${duty}`] = v; const a = aircraftByName(names[i]); if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id][duty] = v; } }
     }
   }
   for (const [col, slot] of SOLO_OPENING) {
     const v = n(col);
-    if (v && names[slot]) t.byTypeDuty[`${names[slot]}|SOLO`] = v;
+    if (v && names[slot]) { t.byTypeDuty[`${names[slot]}|SOLO`] = v; const a = aircraftByName(names[slot]); if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id].SOLO = v; } }
   }
   t.sim = Object.entries(t.byType).reduce((a, [k, v]) => a + (SIMS.has(k) ? v : 0), 0);
   return t;
@@ -305,7 +364,7 @@ export function rowToFlight(row) {
   let hours = row[8];
   if (typeof hours === 'string' && /^\s*\d+([.,]\d+)?\s*$/.test(hours)) hours = num(hours);
   if (typeof hours !== 'number' || !(hours > 0)) return null;
-  // เก็บชั่วโมงเป็น Decimal Hours ตามค่าต้นฉบับ ไม่ปัดเป็นนาทีหรือจำกัด 2 ตำแหน่ง
+  // เก็บค่าต้นฉบับไว้ตรวจสอบ; sanitizeFlight จะทำเครื่องหมายค่าที่ไม่ใช่ 0.1 ชั่วโมง
   let date = '';
   if (typeof dateRaw === 'number') date = dateRaw > 0 ? serialToISO(dateRaw) : '';
   else if (dateRaw instanceof Date) date = dateRaw.toISOString().slice(0, 10);
@@ -322,11 +381,12 @@ export function rowToFlight(row) {
   return {
     date,
     type,
+    aircraftId: aircraftByName(type)?.id || null,
     number: clean(row[3]),
     dep: clean(row[4]),
     dest: clean(row[5]),
     mission,
-    duty: clean(row[7]).toUpperCase(),
+    duty: clean(row[7]),
     hours,
     xc: n(row[19]),
     nightUn: n(row[20]),
@@ -351,38 +411,116 @@ export function sanitizeFlight(f) {
   const hours = num(f.hours);
   if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0) || hours > 24) return null;
   const txt = (v, max) => String(v ?? '').trim().slice(0, max);
-  let duty = txt(f.duty, 12).toUpperCase();
-  const dutyIn = duty;
-  if (!DUTIES.includes(duty)) duty = 'CP/PI'; // หน้าที่นอกรายการ → ค่าเริ่มต้น
-  // SOLO ใช้ได้เฉพาะแบบที่อยู่ในช่อง 5–6 ของรายการผู้ใช้ (คอลัมน์ BC/BD ใน Excel)
-  if (duty === 'SOLO' && !isSoloAllowed(type)) duty = 'CP/PI';
+  const dutyRaw = txt(f.duty, 120);
+  const dutyUpper = dutyRaw.toUpperCase();
+  const duty = DUTIES.includes(dutyUpper) ? dutyUpper : dutyRaw; // Preserve unknown/legacy duty text exactly; never coerce to CP/PI.
+  const matched = f.aircraftId ? aircraftById(f.aircraftId) : aircraftByName(type);
+  const issues = Array.isArray(f._dataIssues) ? f._dataIssues.filter((item) => !(matched && item.code === 'UNKNOWN_AIRCRAFT') && !(matched?.duties.includes(duty) && item.code === 'UNCONFIGURED_DUTY')) : [];
+  if (!isValidHourIncrement(hours, { max: 24 })) issues.push({ code: 'INVALID_HOUR_PRECISION', field: 'hours', value: hours });
+  if (!duty) issues.push({ code: 'MISSING_DUTY', field: 'duty', value: duty });
+  else if (!DUTIES.includes(duty)) issues.push({ code: 'LEGACY_DUTY', field: 'duty', value: duty });
+  if (matched && !matched.duties.includes(duty)) issues.push({ code: 'UNCONFIGURED_DUTY', field: 'duty', value: duty });
+  if (!matched) issues.push({ code: 'UNKNOWN_AIRCRAFT', field: f.aircraftId ? 'aircraftId' : 'type', value: f.aircraftId || type });
+  for (const c of CONDS) { const value = Math.max(0, num(f[c.key])); if (value > 0 && !isValidHourIncrement(value, { max: 24 })) issues.push({ code: 'INVALID_HOUR_PRECISION', field: c.key, value }); }
   let mission = txt(f.mission, 120);
   if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training';
   const out = {
-    id, date, type, hours,
+    id, date, type, aircraftId: matched?.id || (f.aircraftId ? txt(f.aircraftId, 80) : null), hours,
     number: txt(f.number, 20), dep: txt(f.dep, 120), dest: txt(f.dest, 120),
     mission, duty, note: txt(f.note, 500),
     ord: Number.isFinite(Number(f.ord)) ? Number(f.ord) : 0,
   };
-  // สภาพการบินไม่เกินชั่วโมงบินของเที่ยว
   for (const c of CONDS) {
     const v = Math.max(0, num(f[c.key]));
     out[c.key] = Math.min(v, hours);
   }
-  if (dutyIn && dutyIn !== duty) out._dutyFixed = dutyIn; // บอก import ว่ามีการแก้ duty
+  if (issues.length) out._dataIssues = issues.filter((item, index, all) => all.findIndex((x) => x.code === item.code && x.field === item.field && x.value === item.value) === index);
   return out;
 }
 
 export function sanitizeOpening(o) {
   if (!o || typeof o !== 'object') return null;
   const t = emptyTotals();
-  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = Math.max(0, num(o[k]));
+  const invalid = Array.isArray(o._dataIssues) ? [...o._dataIssues] : [];
+  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) {
+    const value = Math.max(0, num(o[k]));
+    if (!isValidHourIncrement(value, { allowZero: true })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: k, value });
+    else t[k] = value;
+  }
   for (const key of ['byType', 'byTypeDuty']) {
     for (const [k, v] of Object.entries(o[key] && typeof o[key] === 'object' ? o[key] : {})) {
-      if (String(k).length <= 40 && num(v) > 0) t[key][k] = num(v);
+      const value = num(v);
+      if (String(k).length > 120 || value <= 0) continue;
+      if (!isValidHourIncrement(value, { allowZero: false })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: `${key}.${k}`, value });
+      else t[key][k] = value;
     }
   }
+  for (const [id, duties] of Object.entries(o.byAircraftDuty && typeof o.byAircraftDuty === 'object' ? o.byAircraftDuty : {})) {
+    for (const [duty, raw] of Object.entries(duties || {})) {
+      const value = num(raw);
+      if (value <= 0) continue;
+      if (!isValidHourIncrement(value, { allowZero: false })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: `byAircraftDuty.${id}.${duty}`, value });
+      else { t.byAircraftDuty[id] ||= {}; t.byAircraftDuty[id][duty] = value; }
+    }
+  }
+  if (invalid.length) t._dataIssues = invalid;
   return t;
+}
+
+// Pure prepare phase for v1 -> v2 migration. It never writes to storage.
+// The caller must show this preview and obtain confirmation before committing.
+export function prepareMigrationV2({ aircraft = DEFAULT_AIRCRAFT, flights = [], opening = null } = {}) {
+  const config = normalizeAircraft(aircraft);
+  const byName = new Map(config.map((a) => [a.name, a]));
+  const migratedFlights = flights.map((source) => {
+    const f = sanitizeFlight(source);
+    if (!f) return { source, migrated: null, issue: 'UNREADABLE_FLIGHT' };
+    const a = f.aircraftId ? config.find((item) => item.id === f.aircraftId) : byName.get(f.type);
+    if (a) {
+      f.aircraftId = a.id;
+      f._dataIssues = (f._dataIssues || []).filter((item) => item.code !== 'UNKNOWN_AIRCRAFT' && !(item.code === 'UNCONFIGURED_DUTY' && a.duties.includes(f.duty)));
+      if (!a.duties.includes(f.duty) && !f._dataIssues.some((item) => item.code === 'UNCONFIGURED_DUTY')) f._dataIssues.push({ code: 'UNCONFIGURED_DUTY', field: 'duty', value: f.duty });
+    } else if (!f._dataIssues?.some((item) => item.code === 'UNKNOWN_AIRCRAFT')) {
+      f._dataIssues = [...(f._dataIssues || []), { code: 'UNKNOWN_AIRCRAFT', field: 'type', value: f.type }];
+    }
+    return { source, migrated: f, issue: null };
+  });
+  const oldOpening = opening ? sanitizeOpening(opening) : null;
+  const byAircraftDuty = Object.fromEntries(Object.entries(oldOpening?.byAircraftDuty || {}).map(([id, duties]) => [id, { ...(duties || {}) }]));
+  const unresolvedOpening = {};
+  for (const [key, value] of Object.entries(oldOpening?.byTypeDuty || {})) {
+    const split = key.lastIndexOf('|');
+    const name = key.slice(0, split);
+    const duty = key.slice(split + 1);
+    const a = byName.get(name);
+    if (a) {
+      byAircraftDuty[a.id] ||= {};
+      if (byAircraftDuty[a.id][duty] == null) byAircraftDuty[a.id][duty] = value;
+    } else unresolvedOpening[key] = value;
+  }
+  const migratedOpening = oldOpening ? {
+    ...oldOpening,
+    version: 2,
+    byAircraftDuty,
+    _unresolvedByTypeDuty: unresolvedOpening,
+    _dataIssues: [...(oldOpening._dataIssues || []), ...Object.entries(unresolvedOpening).map(([field, value]) => ({ code: 'UNKNOWN_AIRCRAFT_OPENING', field, value }))],
+  } : null;
+  const dataQuality = {
+    invalidFlights: migratedFlights.filter((x) => !x.migrated).length,
+    invalidHourFlights: migratedFlights.filter((x) => x.migrated?._dataIssues?.some((i) => i.code === 'INVALID_HOUR_PRECISION')).length,
+    legacyDutyFlights: migratedFlights.filter((x) => x.migrated?._dataIssues?.some((i) => i.code === 'LEGACY_DUTY' || i.code === 'UNCONFIGURED_DUTY')).length,
+    unknownAircraftFlights: migratedFlights.filter((x) => x.migrated?._dataIssues?.some((i) => i.code === 'UNKNOWN_AIRCRAFT')).length,
+    unresolvedOpeningEntries: Object.keys(unresolvedOpening).length,
+    openingIssues: oldOpening?._dataIssues?.length || 0,
+  };
+  return {
+    version: 2,
+    config: { version: 2, v: 2, aircraft: config },
+    flights: migratedFlights,
+    opening: migratedOpening,
+    dataQuality,
+    requiresReview: Object.values(dataQuality).some((n) => n > 0),
+  };
 }
 
 export const flightKey = (f) =>

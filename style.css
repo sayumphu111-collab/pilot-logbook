@@ -307,6 +307,12 @@ dialog table input { min-height: 40px; padding: 6px 8px; margin: 0; min-width: 6
 .ac-row .ic:disabled { opacity: .35; }
 .ac-row .ic.del { color: var(--danger); }
 .ac-note { grid-column: 2; font-size: .78rem; color: var(--muted); margin-top: -2px; }
+.ac-active { grid-column: 2; font-size: .82rem; color: var(--muted); }
+.ac-active label { display: inline-flex; align-items: center; gap: 6px; }
+.ac-active input { width: 16px; height: 16px; accent-color: var(--accent); }
+.ac-duty-list { grid-column: 2; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: .82rem; }
+.ac-duty-list label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ac-duty-list input { width: 16px; height: 16px; accent-color: var(--accent); }
 .ac-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
 .ac-tools .btn { min-height: 44px; padding: 0 14px; font-size: .9rem; }
 

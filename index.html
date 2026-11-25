@@ -163,8 +163,14 @@
     <section class="card">
       <h2>แบบอากาศยานของฉัน</h2>
       <div id="ac-summary" class="chips-static"></div>
-      <p class="muted small">ตั้งได้สูงสุด 8 แบบ ลำดับมีผลกับไฟล์ Excel ที่ส่งออก (แม่แบบมี 8 ช่อง)</p>
+      <p class="muted small">เพิ่มได้มากกว่า 8 แบบและกำหนด Duty แยกกันได้ (Excel Template รุ่นเดิมมี 8 ช่อง)</p>
       <button id="btn-aircraft" class="btn">แก้ไขรายการแบบอากาศยาน</button>
+    </section>
+
+    <section class="card">
+      <h2>Data Quality</h2>
+      <p id="data-quality-info" class="muted small">กำลังตรวจสอบข้อมูล…</p>
+      <button id="btn-migrate-v2" class="btn">ตรวจสอบและย้ายข้อมูลเป็น Data Model v2</button>
     </section>
 
     <section class="card">
@@ -253,7 +259,7 @@
       <details>
         <summary>ตั้งรายการแบบอากาศยานของคุณ</summary>
         <ul>
-          <li>ไปที่ ตั้งค่า → แบบอากาศยานของฉัน เพิ่ม เปลี่ยนชื่อ ลบ หรือเรียงลำดับได้ <b>สูงสุด 8 แบบ</b></li>
+          <li>ไปที่ ตั้งค่า → แบบอากาศยานของฉัน เพิ่ม เปลี่ยนชื่อ ปิดใช้งาน หรือเรียงลำดับได้ และกำหนด Flight Duty แยกตาม Aircraft</li>
           <li>เลือกชนิดเครื่องยนต์ของแต่ละแบบ (เครื่องยนต์เดียว / หลายเครื่องยนต์ / เครื่องฝึกบินจำลอง) แอปใช้คำนวณยอดและไฟล์ Excel</li>
           <li>เปลี่ยนชื่อแบบ: เที่ยวบินเก่าและยอดยกมาจะเปลี่ยนชื่อตามให้อัตโนมัติ</li>
           <li>ลบแบบที่ยังมีเที่ยวบินอยู่ไม่ได้ ให้แก้ชื่อในแถวเดิมแทน</li>
@@ -339,7 +345,7 @@
   <dialog id="dlg-aircraft">
     <form method="dialog" id="form-aircraft">
       <h2>แบบอากาศยานของฉัน</h2>
-      <p class="muted small">ใส่ได้สูงสุด 8 แบบ ลำดับที่เรียงไว้มีผลกับไฟล์ Excel (ดูหมายเหตุใต้แต่ละแถว)</p>
+      <p class="muted small">เพิ่มได้มากกว่า 8 แบบ กำหนด Duty แยกตาม Aircraft ได้ ลำดับมีผลเฉพาะการจับคู่ช่องใน Excel Template รุ่นเดิม</p>
       <div id="ac-rows"></div>
       <div class="ac-tools">
         <button type="button" class="btn" id="ac-add">+ เพิ่มแบบ</button>

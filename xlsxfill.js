@@ -1,6 +1,6 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, addTotals, isDefaultAircraft, num, slotDuties } from './logic.js';
+import { AIRCRAFT, CONDS, PAGE_SIZE, addTotals, isDefaultAircraft, isValidHourIncrement, num } from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -74,7 +74,7 @@ export function fillSheetXml(xml, values) {
 // BN–BO=SOLO (สูตรคำนวณเอง) BP=หมายเหตุ
 const COND_COL = { xc: 'T', nightUn: 'U', nvg: 'V', ifr: 'W', imc: 'X' };
 
-export function pageValues(page) {
+export function pageValues(page, aircraft = []) {
   const v = {};
   page.rows.forEach((f, i) => {
     const r = FIRST_ROW + i;
@@ -86,6 +86,12 @@ export function pageValues(page) {
     if (f.mission) v[`G${r}`] = f.mission;
     if (f.duty) v[`H${r}`] = f.duty;
     v[`I${r}`] = num(f.hours);
+    // Hidden export helpers: stable Aircraft ID + valid 0.1-hour marker.
+    const matchedAircraft = f.aircraftId
+      ? aircraft.find((a) => a.id === f.aircraftId)
+      : aircraft.find((a) => a.name === f.type);
+    v[`DE${r}`] = matchedAircraft?.id || f.aircraftId || '';
+    v[`DF${r}`] = isValidHourIncrement(f.hours) ? 1 : 0;
     for (const c of CONDS) if (num(f[c.key]) > 0) v[`${COND_COL[c.key]}${r}`] = num(f[c.key]);
     if (f.note) v[`BP${r}`] = f.note;
   });
@@ -164,7 +170,7 @@ export function retargetHoursValidation(xml) {
 export function retargetTypeValidation(xml, names) {
   return xml.replace(
     /(<dataValidation [^>]*sqref="C\d+:C\d+"[^>]*><formula1>)[\s\S]*?(<\/formula1>)/g,
-    (m, a, z) => `${a}${q(names.map(xmlEsc).join(','))}${z}`,
+    (m, a, z) => `${a}AircraftTypeList${z}`,
   );
 }
 
@@ -213,8 +219,8 @@ export function rebuildSummary(xml, aircraft) {
     const cells = {};
     if (a) {
       cells.B = { text: a.name };
-      const refs = slotDuties(k).map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
-      if (a.kind === 'sim') cells.M = { f: refs.map((x) => x.ref).join('+') };
+      const refs = (a.duties || []).map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
+      if (a.kind === 'sim' && refs.length) cells.M = { f: refs.map((x) => x.ref).join('+') };
       else for (const x of refs) {
         const col = DUTY_SUMMARY_COL[x.d];
         if (col) cells[col] = { f: x.ref };
@@ -298,8 +304,8 @@ export async function customizeTemplate({ getText, setText }, aircraft) {
   } catch (e) {
     if (!/not found|ENOENT|missing|undefined/i.test(String(e?.message || e))) throw e;
   }
-  // หมายเหตุ: ไม่เขียนชีต Summary อีกต่อไป — แม่แบบ v1.1+ มี Summary ที่สร้างใน Excel
-  // สูตรของ Summary อ้างอิงคอลัมน์ตำแหน่งของ S50 จึงคำนวณต่อเองตอนเปิดไฟล์ (รองรับการเปลี่ยนชื่อแบบด้วยตำแหน่ง)
+  // Rebuild Summary from each Aircraft's own Duty configuration; formulas still use cumulative S50 cells.
+  if (paths.Summary) setText(paths.Summary, rebuildSummary(await getText(paths.Summary), aircraft));
 }
 
 // ---------- หา path ของชีตจากชื่อ ----------
@@ -319,6 +325,123 @@ export function sheetPaths(workbookXml, relsXml) {
   return out;
 }
 
+
+// ---------- Dynamic Excel sheets: รองรับ Aircraft/Duty มากกว่า 8 ช่องในแม่แบบเดิม ----------
+const xEscAttr = (s) => xmlEsc(s).replace(/"/g, '&quot;');
+const inlineCell = (ref, value, style='') => `<c r="${ref}"${style} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(value ?? '')}</t></is></c>`;
+const numberCell = (ref, value, style='') => `<c r="${ref}"${style}><v>${excelNumber(value)}</v></c>`;
+const formulaCell = (ref, formula, style='') => `<c r="${ref}"${style}><f>${xmlEsc(formula)}</f></c>`;
+function worksheetXml(rows, lastCol, lastRow) {
+  const body = rows.map((cells, i) => `<row r="${i+1}">${cells.join('')}</row>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><sheetData>${body}</sheetData><autoFilter ref="A1:${lastCol}${lastRow}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`;
+}
+function registerSheet(workbookXml, relsXml, contentTypesXml, name, target) {
+  const sheetIds = [...workbookXml.matchAll(/<sheet\b[^>]*sheetId="(\d+)"/g)].map(m => Number(m[1]));
+  const relIds = [...relsXml.matchAll(/\bId="rId(\d+)"/g)].map(m => Number(m[1]));
+  const sheetId = Math.max(0, ...sheetIds) + 1;
+  const relId = Math.max(0, ...relIds) + 1;
+  const rid = `rId${relId}`;
+  const sheetTag = `<sheet name="${xEscAttr(name)}" sheetId="${sheetId}" r:id="${rid}"/>`;
+  workbookXml = workbookXml.replace('</sheets>', `${sheetTag}</sheets>`);
+  relsXml = relsXml.replace('</Relationships>', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${target.replace(/^xl\//,'')}"/></Relationships>`);
+  contentTypesXml = contentTypesXml.replace('</Types>', `<Override PartName="/${target}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
+  return { workbookXml, relsXml, contentTypesXml };
+}
+function formulaForDuty(aircraftIdCell, dutyCell) {
+  const parts = [];
+  for (let n=1; n<=MAX_PAGES; n++) {
+    const sh = `'S${n}'`;
+    // Aggregate by stable Aircraft ID, not the editable display name.
+    // DF=1 excludes invalid precision values even if this module is called outside the UI guard.
+    parts.push(`SUMIFS(${sh}!$I$4:$I$21,${sh}!$DE$4:$DE$21,$${aircraftIdCell},${sh}!$H$4:$H$21,$${dutyCell},${sh}!$DF$4:$DF$21,1)`);
+  }
+  return parts.join('+');
+}
+export function buildDynamicAircraftSummary(aircraft, opening = null, flights = []) {
+  const rows = [[inlineCell('A1','Aircraft'),inlineCell('B1','Kind'),inlineCell('C1','Flight Duty'),inlineCell('D1','Opening Balance (h)'),inlineCell('E1','Flight Hours (h)'),inlineCell('F1','Total Hours (h)')]];
+  let r = 2;
+  const openingById = opening?.byAircraftDuty || {};
+  const openingByType = opening?.byTypeDuty || {};
+  for (const a of aircraft || []) {
+    const dutySet = new Set(a.duties || []);
+    for (const f of flights || []) {
+      const belongs = f.aircraftId ? f.aircraftId === a.id : f.type === a.name;
+      if (belongs && f.duty) dutySet.add(f.duty);
+    }
+    for (const key of Object.keys(openingByType)) if (key.startsWith(`${a.name}|`)) dutySet.add(key.slice(a.name.length + 1));
+    for (const duty of Object.keys(openingById[a.id] || {})) dutySet.add(duty);
+    for (const duty of dutySet) {
+      const key = `${a.name}|${duty}`;
+      const open = Number(openingById[a.id]?.[duty] ?? openingByType[key] ?? 0);
+      const ar = String(r);
+      rows.push([
+        inlineCell(`A${r}`,a.name), inlineCell(`B${r}`,a.kind), inlineCell(`C${r}`,duty),
+        numberCell(`D${r}`,open), formulaCell(`E${r}`,formulaForDuty('G'+ar,'C'+ar)), formulaCell(`F${r}`,`D${r}+E${r}`),
+        inlineCell(`G${r}`,a.id || ''),
+      ]);
+      r++;
+    }
+  }
+  if (r === 2) rows.push([inlineCell('A2','No aircraft configured')]);
+  rows[0].push(inlineCell('G1','Aircraft ID'), inlineCell('H1','Aircraft Type List'));
+  (aircraft || []).forEach((a,i) => rows[i+1].push(inlineCell(`H${i+2}`,a.name)));
+  return worksheetXml(rows,'H',Math.max(r-1,(aircraft||[]).length+1));
+}
+export function buildDynamicDataQuality(flights, opening = null) {
+  const rows = [[inlineCell('A1','Record'),inlineCell('B1','Aircraft'),inlineCell('C1','Date / Field'),inlineCell('D1','Issue Code'),inlineCell('E1','Original Value')]];
+  let r=2;
+  for (const f of flights || []) for (const issue of f._dataIssues || []) {
+    rows.push([inlineCell(`A${r}`,f.id || 'Flight'),inlineCell(`B${r}`,f.type || ''),inlineCell(`C${r}`,`${f.date || ''} ${issue.field || ''}`),inlineCell(`D${r}`,issue.code || 'DATA_QUALITY'),inlineCell(`E${r}`,String(issue.value ?? ''))]); r++;
+  }
+  for (const issue of opening?._dataIssues || []) {
+    rows.push([inlineCell(`A${r}`,'Opening Balance'),inlineCell(`B${r}`,''),inlineCell(`C${r}`,issue.field || ''),inlineCell(`D${r}`,issue.code || 'DATA_QUALITY'),inlineCell(`E${r}`,String(issue.value ?? ''))]); r++;
+  }
+  if (r===2) rows.push([inlineCell('A2','No data quality issues')]);
+  return worksheetXml(rows,'E',r-1);
+}
+async function addDynamicSheets(io, aircraft, opening, flights) {
+  const {getText,setText}=io;
+  let wb=await getText('xl/workbook.xml');
+  let rels=await getText('xl/_rels/workbook.xml.rels');
+  let ct=await getText('[Content_Types].xml');
+  const paths=sheetPaths(wb,rels);
+  const nextNum=Math.max(0,...Object.values(paths).map(x=>Number(/sheet(\d+)\.xml$/.exec(x)?.[1]||0)))+1;
+  const defs=[['Aircraft Summary',`xl/worksheets/sheet${nextNum}.xml`,buildDynamicAircraftSummary(aircraft,opening,flights)],['Data Quality',`xl/worksheets/sheet${nextNum+1}.xml`,buildDynamicDataQuality(flights,opening)]];
+  for (const [name,path,xml] of defs) {
+    const found=paths[name];
+    if (found) setText(found,xml);
+    else {
+      const reg=registerSheet(wb,rels,ct,name,path);
+      wb=reg.workbookXml; rels=reg.relsXml; ct=reg.contentTypesXml;
+      setText(path,xml);
+    }
+  }
+  const listEnd=Math.max(2,(aircraft||[]).length+1);
+  const defined=`<definedName name="AircraftTypeList">'Aircraft Summary'!$H$2:$H$${listEnd}</definedName>`;
+  if (/<definedNames>/.test(wb)) {
+    wb = wb.replace(/<definedName\b[^>]*\bname="AircraftTypeList"[^>]*>[\s\S]*?<\/definedName>/g, '');
+    wb = wb.replace('</definedNames>',`${defined}</definedNames>`);
+  } else wb=wb.replace('</sheets>',`</sheets><definedNames>${defined}</definedNames>`);
+  setText('xl/workbook.xml',wb); setText('xl/_rels/workbook.xml.rels',rels); setText('[Content_Types].xml',ct);
+}
+
+
+// Reserve hidden columns DE:DF for export-only metadata; visible logbook layout remains unchanged.
+export function addHiddenExportColumns(xml) {
+  xml = xml.replace(/(<dimension\b[^>]*\bref="[A-Z]+\d+:)([A-Z]+)(\d+)("[^>]*\/>)/, (m, a, lastCol, row, z) => {
+    const current = colNum(lastCol);
+    return a + colLetters(Math.max(current, colNum('DF'))) + row + z;
+  });
+  if (/<cols>[\s\S]*?<\/cols>/.test(xml)) {
+    if (!/<col\b[^>]*\bmin="109"[^>]*\bmax="110"[^>]*\bhidden="1"/.test(xml)) {
+      xml = xml.replace('</cols>', '<col min="109" max="110" width="0" hidden="1" customWidth="1"/></cols>');
+    }
+  } else {
+    xml = xml.replace(/<sheetFormatPr\b[^>]*\/>/, (m) => `${m}<cols><col min="109" max="110" width="0" hidden="1" customWidth="1"/></cols>`);
+  }
+  return xml;
+}
+
 // ---------- รวมทั้งหมด ----------
 // getText(path) → Promise<string>, setText(path, string)
 // บังคับให้ Excel คำนวณสูตรทั้งหมดตอนเปิดไฟล์ (แอปเขียนสูตรแบบไม่มี cached value)
@@ -335,7 +458,7 @@ export function ensureFullCalcOnLoad(wbXml) {
   return wbXml.replace(/<\/workbook>/, '<calcPr calcId="124519" fullCalcOnLoad="1"/></workbook>');
 }
 
-export async function fillWorkbook(io, pages, opening, aircraft = null) {
+export async function fillWorkbook(io, pages, opening, aircraft = null, flights = []) {
   const { getText, setText } = io;
   if (pages.length > MAX_PAGES) {
     throw new Error(`ข้อมูลเกิน ${MAX_PAGES * PAGE_SIZE} รายการ (${MAX_PAGES} ชีต) — ต้องเพิ่มชีตในแม่แบบก่อน`);
@@ -350,15 +473,16 @@ export async function fillWorkbook(io, pages, opening, aircraft = null) {
   for (let n = 1; n <= MAX_PAGES; n++) {
     const path = paths[`S${n}`];
     if (!path) continue;
-    setText(path, retargetHoursValidation(await getText(path)));
+    setText(path, addHiddenExportColumns(retargetHoursValidation(await getText(path))));
   }
   for (const p of pages) {
     const path = paths[`S${p.n}`];
     if (!path) throw new Error(`ไม่พบชีต S${p.n} ในแม่แบบ`);
-    let values = pageValues(p);
+    let values = pageValues(p, aircraft || []);
     if (p.n === 1 && opening) values = { ...values, ...openingValues(opening) };
     setText(path, fillSheetXml(await getText(path), values));
   }
+  if (aircraft) await addDynamicSheets(io, aircraft, opening, flights);
   // ยอดยกมาต้องใส่แม้ยังไม่มีเที่ยวบิน
   if (!pages.length && opening) {
     const path = paths.S1;

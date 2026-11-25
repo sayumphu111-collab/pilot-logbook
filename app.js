@@ -5,7 +5,7 @@ import { fillWorkbook, MAX_PAGES } from './xlsxfill.js';
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const state = { keep: {}, flights: [], opening: null, config: null, user: undefined, status: '', editing: null, view: 'add', synced: false, welcome: false, wstep: 0, welcomeChecked: false, recheckWelcome: false };
+const state = { keep: {}, flights: [], rawFlights: [], unreadableFlights: [], opening: null, rawOpening: null, config: null, user: undefined, status: '', editing: null, view: 'add', synced: false, welcome: false, wstep: 0, welcomeChecked: false, recheckWelcome: false };
 let backend = null;
 let toastTimer = 0;
 
@@ -103,16 +103,17 @@ function wireChips(boxSel, selSel) {
 }
 
 // รายการแบบอากาศยานเปลี่ยนได้ → วาดชิปใหม่ (extra = แบบของเที่ยวบินเก่าที่กำลังแก้ ซึ่งไม่อยู่ในรายการแล้ว)
+function activeAircraftNames() { return L.getAircraft().filter((a) => a.active).map((a) => a.name); }
 function renderTypeChips(extra = null) {
-  renderChips('#chips-type', '#f-type', L.AIRCRAFT, extra);
+  renderChips('#chips-type', '#f-type', activeAircraftNames(), extra);
   syncChips();
 }
 
-// SOLO ใช้ได้เฉพาะแบบที่อยู่ในช่อง 5–6 (คอลัมน์ BC/BD ใน Excel หลัง rename ตามรายการผู้ใช้)
+// Flight Duties are configured per Aircraft; Excel compatibility is checked separately.
 function allowedDuties(type) {
   const i = L.AIRCRAFT.indexOf(type);
   if (i < 0) return L.DUTIES; // ไม่รู้จักแบบ → ให้เลือกได้ทุกหน้าที่
-  return L.slotDuties(i); // หน้าที่ที่คอลัมน์ในแม่แบบรองรับตามลำดับช่อง (EN48/SIM รวมหน้าที่เพิ่มแล้ว)
+  return L.dutiesForAircraft(type);
 }
 
 function renderDutyChips(extra = null) {
@@ -248,7 +249,7 @@ function initForm() {
   $('#conds').addEventListener('input', (e) => { const el = e.target.closest('.cond'); if (el) el.dataset.auto = ''; });
   $('#f-hours').addEventListener('input', syncAutoConds);
   document.querySelectorAll('.stepper [data-step]').forEach((b) => b.addEventListener('click', () => {
-    const next = Math.max(0, Math.round((L.num($('#f-hours').value) + Number(b.dataset.step)) * 1e8) / 1e8);
+    const next = Math.max(0, Math.round((L.num($('#f-hours').value) + Number(b.dataset.step)) * 10) / 10);
     $('#f-hours').value = next ? String(next) : '';
     syncAutoConds();
   }));
@@ -260,7 +261,7 @@ function initForm() {
 function resetForm(keep = {}) {
   renderTypeChips();
   $('#f-date').value = keep.date || L.todayISO();
-  $('#f-type').value = L.AIRCRAFT.includes(keep.type) ? keep.type : L.AIRCRAFT[0];
+  $('#f-type').value = activeAircraftNames().includes(keep.type) ? keep.type : (activeAircraftNames()[0] || L.AIRCRAFT[0]);
   const nums = LS.get('lb.nums', {});
   $('#f-number').value = keep.number ?? nums[$('#f-type').value] ?? '';
   renderDutyChips();
@@ -282,6 +283,7 @@ function readForm() {
   const f = {
     date: $('#f-date').value,
     type: $('#f-type').value,
+    aircraftId: (state.editing && state.flights.find((x) => x.id === state.editing)?.type === $('#f-type').value ? state.flights.find((x) => x.id === state.editing)?.aircraftId : null) || L.aircraftByName($('#f-type').value)?.id || null,
     number: $('#f-number').value.trim(),
     dep: $('#f-dep').value.trim(),
     dest: $('#f-dest').value.trim(),
@@ -296,19 +298,24 @@ function readForm() {
 
 function validate(f) {
   if (!f.date) return 'เลือกวันที่';
-  if (!f.type || !L.AIRCRAFT.includes(f.type)) return 'เลือกแบบอากาศยานจากรายการ';
+  const editingFlight = state.editing ? state.flights.find((x) => x.id === state.editing) : null;
+  if (!f.type || (!activeAircraftNames().includes(f.type) && editingFlight?.type !== f.type)) return 'เลือกแบบอากาศยานที่เปิดใช้งานจากรายการ';
   if (!(f.hours > 0)) return 'ใส่ชั่วโมงบิน (มากกว่า 0)';
   if (f.hours > 24) return 'ชั่วโมงบินเกิน 24 ชม. ตรวจสอบอีกครั้ง';
+  if (!L.isValidHourIncrement(f.hours, { max: 24 })) return 'ชั่วโมงบินต้องเพิ่มครั้งละ 0.1 ชั่วโมง เช่น 1.2 หรือ 1.5';
   const duties = allowedDuties(f.type);
-  if (!f.duty || !duties.includes(f.duty)) {
+  const previousFlight = state.editing ? state.flights.find((x) => x.id === state.editing) : null;
+  const preservingLegacyDuty = previousFlight?.duty === f.duty;
+  if (!f.duty || (!duties.includes(f.duty) && !preservingLegacyDuty)) {
     if (f.duty === 'SOLO') {
-      const names = [...L.soloAircraftNames()].join(' / ') || 'ช่อง 6–7 ในรายการแบบ';
+      const names = [...L.soloAircraftNames()].join(' / ') || 'Aircraft ที่กำหนด SOLO ไว้';
       return `หน้าที่ SOLO ใช้ได้เฉพาะแบบ ${names}`;
     }
     return 'เลือกหน้าที่จากรายการที่อนุญาตตามแบบอากาศยาน';
   }
   for (const c of L.CONDS) {
     if (f[c.key] > f.hours + 1e-9) return `${c.label} มากกว่าชั่วโมงบินรวมของเที่ยวนี้`;
+    if (f[c.key] > 0 && !L.isValidHourIncrement(f[c.key], { max: 24 })) return `${c.label} ต้องเพิ่มครั้งละ 0.1 ชั่วโมง`;
   }
   return '';
 }
@@ -578,6 +585,22 @@ function renderSettings() {
   $('#opening-info').textContent = state.opening?.hours
     ? `ตั้งไว้ ${L.fmt(state.opening.hours)} ชม.`
     : 'ยังไม่ได้ตั้งค่า (เริ่มนับจาก 0)';
+  const issueCounts = { precision: 0, legacy: 0, unknown: 0, other: 0 };
+  for (const f of state.flights) for (const issue of f._dataIssues || []) {
+    if (issue.code === 'INVALID_HOUR_PRECISION') issueCounts.precision++;
+    else if (issue.code === 'LEGACY_DUTY' || issue.code === 'UNCONFIGURED_DUTY') issueCounts.legacy++;
+    else if (issue.code === 'UNKNOWN_AIRCRAFT') issueCounts.unknown++;
+    else issueCounts.other++;
+  }
+  for (const issue of state.opening?._dataIssues || []) {
+    if (issue.code === 'INVALID_HOUR_PRECISION') issueCounts.precision++;
+    else issueCounts.other++;
+  }
+  issueCounts.other += state.unreadableFlights.length;
+  const totalIssues = Object.values(issueCounts).reduce((a, b) => a + b, 0);
+  $('#data-quality-info').textContent = totalIssues
+    ? `พบรายการที่ต้องตรวจสอบ ${totalIssues} จุด · ชั่วโมงทศนิยมไม่ถูกต้อง ${issueCounts.precision} · Legacy/Unconfigured Duty ${issueCounts.legacy} · ไม่พบ Aircraft ${issueCounts.unknown} · รายการอ่านไม่ได้/อื่น ๆ ${issueCounts.other}`
+    : 'ไม่พบปัญหาคุณภาพข้อมูลจากการตรวจสอบล่าสุด';
 }
 
 // ----- ยอดยกมา
@@ -589,39 +612,44 @@ function openOpeningDialog() {
   $('#opening-fields').innerHTML = `
     <div class="sect">ชั่วโมงสะสมตามแบบ × หน้าที่</div>
     <div class="scroll"><table><thead><tr><th>แบบ</th>${L.DUTIES.map((d) => `<th>${d}</th>`).join('')}</tr></thead>
-    <tbody>${L.AIRCRAFT.map((ty) => `<tr><td>${esc(ty)}</td>${L.DUTIES.map((d) => `<td><input type="number" step="any" min="0" inputmode="decimal" data-k="${esc(ty)}|${d}" value="${val(o.byTypeDuty[`${ty}|${d}`])}" ${L.slotDuties(L.AIRCRAFT.indexOf(ty)).includes(d) ? '' : 'disabled'}></td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <tbody>${L.AIRCRAFT.map((ty) => { const a = L.aircraftByName(ty); return `<tr><td>${esc(ty)}</td>${L.DUTIES.map((d) => { const v = o.byTypeDuty?.[`${ty}|${d}`] ?? o.byAircraftDuty?.[a?.id]?.[d]; return `<td><input type="number" step="0.1" min="0" inputmode="decimal" data-k="${esc(ty)}|${d}" value="${val(v)}" ${L.dutiesForAircraft(ty).includes(d) ? '' : 'disabled'}></td>`; }).join('')}</tr>`; }).join('')}</tbody></table></div>
     <div class="sect">ยอดรวมอื่น ๆ <span class="muted small">(เว้นว่างให้คำนวณอัตโนมัติ: รวม/Single/Multi)</span></div>
-    <div class="grid2">${GENERAL.map(([k, label]) => `<label>${label}<input type="number" step="any" min="0" inputmode="decimal" data-g="${k}" value="${val(o[k])}"></label>`).join('')}</div>`;
+    <div class="grid2">${GENERAL.map(([k, label]) => `<label>${label}<input type="number" step="0.1" min="0" inputmode="decimal" data-g="${k}" value="${val(o[k])}"></label>`).join('')}</div>`;
   $('#dlg-opening').returnValue = '';
   $('#dlg-opening').showModal();
 }
 
 function saveOpeningFromDialog() {
+  const inputs = [...document.querySelectorAll('#opening-fields input:not(:disabled)')];
+  const invalid = inputs.find((inp) => inp.value !== '' && !L.isValidHourIncrement(L.num(inp.value), { allowZero: true }));
+  if (invalid) { toast('ยอดยกมาต้องใช้ทศนิยม 1 ตำแหน่ง เช่น 12.3 ชั่วโมง', 5000); invalid.focus(); return; }
   const t = L.emptyTotals();
   for (const inp of document.querySelectorAll('#opening-fields [data-k]')) {
     if (inp.disabled) continue;
     const v = L.num(inp.value);
     if (!v) continue;
-    const [ty] = inp.dataset.k.split('|');
+    const [ty, duty] = inp.dataset.k.split('|');
     t.byTypeDuty[inp.dataset.k] = v;
-    t.byType[ty] = (t.byType[ty] || 0) + v;
+    t.byType[ty] = Math.round(((t.byType[ty] || 0) + v) * 10) / 10;
+    const aircraft = L.aircraftByName(ty);
+    if (aircraft) { t.byAircraftDuty[aircraft.id] ||= {}; t.byAircraftDuty[aircraft.id][duty] = v; }
   }
   for (const inp of document.querySelectorAll('#opening-fields [data-g]')) t[inp.dataset.g] = L.num(inp.value);
-  const sumTypes = Object.values(t.byType).reduce((a, b) => a + b, 0);
+  const sumTypes = Math.round(Object.values(t.byType).reduce((a, b) => a + b, 0) * 10) / 10;
   if (!t.hours) t.hours = sumTypes;
   if (!t.single && !t.multi) {
     for (const [ty, h] of Object.entries(t.byType)) {
-      if (L.SINGLE.has(ty)) t.single += h;
-      if (L.MULTI.has(ty)) t.multi += h;
+      if (L.SINGLE.has(ty)) t.single = Math.round((t.single + h) * 10) / 10;
+      if (L.MULTI.has(ty)) t.multi = Math.round((t.multi + h) * 10) / 10;
     }
   }
-  t.sim = Object.entries(t.byType).reduce((s, [k, v]) => s + (L.SIMS.has(k) ? v : 0), 0);
+  t.sim = Object.entries(t.byType).reduce((sum, [k, v]) => L.SIMS.has(k) ? Math.round((sum + v) * 10) / 10 : sum, 0);
   backend.saveOpening(t);
   toast('บันทึกยอดยกมาแล้ว');
 }
 
-// ----- แบบอากาศยานของฉัน
-let acDraft = []; // [{ name, kind, orig }]  orig = ชื่อเดิม (ใช้ตามรอยการเปลี่ยนชื่อ)
+// ----- แบบอากาศยานของฉัน (Configuration v2)
+let acDraft = []; // {id,name,kind,duties,active,origName}
 
 function renderAcRows() {
   const kinds = Object.entries(L.KIND_SHORT);
@@ -633,11 +661,12 @@ function renderAcRows() {
         <select class="ac-kind" aria-label="ชนิดเครื่องยนต์">${kinds.map(([k, label]) => `<option value="${k}"${a.kind === k ? ' selected' : ''}>${label}</option>`).join('')}</select>
         <button type="button" class="ic" data-act="up" aria-label="เลื่อนขึ้น"${i === 0 ? ' disabled' : ''}>▲</button>
         <button type="button" class="ic" data-act="down" aria-label="เลื่อนลง"${i === acDraft.length - 1 ? ' disabled' : ''}>▼</button>
-        <button type="button" class="ic del" data-act="del" aria-label="ลบแถวนี้">✕</button>
+        <button type="button" class="ic del" data-act="del" aria-label="ปิด/ลบแถวนี้">✕</button>
       </div>
-      <div class="ac-note">ไฟล์ Excel รองรับหน้าที่: ${L.slotDuties(i).join(', ')}</div>
+      <div class="ac-active"><label><input type="checkbox" class="ac-active-check"${a.active !== false ? ' checked' : ''}> เปิดใช้งาน</label></div>
+      <div class="ac-duty-list"><span class="ac-note">Flight Duty:</span>${L.DUTIES.map((d) => `<label><input type="checkbox" class="ac-duty" value="${d}"${a.duties.includes(d) ? ' checked' : ''}> ${d}</label>`).join('')}</div>
     </div>`).join('');
-  $('#ac-add').disabled = acDraft.length >= L.MAX_AIRCRAFT;
+  $('#ac-add').disabled = false;
 }
 
 function syncAcDraft() {
@@ -645,61 +674,73 @@ function syncAcDraft() {
     if (!acDraft[i]) return;
     acDraft[i].name = row.querySelector('.ac-name').value.trim().toUpperCase();
     acDraft[i].kind = row.querySelector('.ac-kind').value;
+    acDraft[i].duties = [...row.querySelectorAll('.ac-duty:checked')].map((x) => x.value);
+    acDraft[i].active = row.querySelector('.ac-active-check').checked;
   });
 }
 
 function openAircraftDialog() {
-  acDraft = L.getAircraft().map((a) => ({ ...a, orig: a.name }));
+  acDraft = L.getAircraft().map((a) => ({ ...a, origName: a.name }));
   renderAcRows();
   $('#ac-error').hidden = true;
   $('#dlg-aircraft').returnValue = '';
   $('#dlg-aircraft').showModal();
 }
 
-// ชื่อแบบที่ยังถูกใช้อยู่ (เที่ยวบิน/ยอดยกมา) → ห้ามลบ
 function usedAircraftCount(name) {
-  let n = state.flights.filter((f) => f.type === name).length;
-  if (state.opening && L.num(state.opening.byType?.[name]) > 0) n += 1;
+  let n = state.flights.filter((f) => f.type === name || (f.aircraftId && f.aircraftId === L.aircraftByName(name)?.id)).length;
+  const id = L.aircraftByName(name)?.id;
+  if (state.opening && (L.num(state.opening.byType?.[name]) > 0 || Object.entries(state.opening.byTypeDuty || {}).some(([k, v]) => k.startsWith(`${name}|`) && L.num(v) > 0) || (id && Object.values(state.opening.byAircraftDuty?.[id] || {}).some((v) => L.num(v) > 0)))) n += 1;
   return n;
 }
 
-function commitAircraft(list, renames) {
-  if (renames.size) {
-    const map = (t) => renames.get(t) ?? t;
-    const changed = state.flights.filter((f) => renames.has(f.type)).map((f) => ({ ...f, type: map(f.type) }));
-    if (changed.length) backend.saveMany(changed);
-    if (state.opening) {
-      const o = { ...state.opening, byType: {}, byTypeDuty: {} };
-      for (const [k, v] of Object.entries(state.opening.byType || {})) o.byType[map(k)] = (o.byType[map(k)] || 0) + v;
-      for (const [k, v] of Object.entries(state.opening.byTypeDuty || {})) {
-        const [ty, d] = k.split('|');
-        const nk = `${map(ty)}|${d}`;
-        o.byTypeDuty[nk] = (o.byTypeDuty[nk] || 0) + v;
-      }
-      backend.saveOpening(o);
-    }
+function commitAircraft(list) {
+  const previous = L.getAircraft();
+  const next = L.normalizeAircraft(list);
+  const oldByName = new Map(previous.map((a) => [a.name, a]));
+  const nextById = new Map(next.map((a) => [a.id, a]));
+  const changed = [];
+  for (const f of state.flights) {
+    const old = f.aircraftId ? previous.find((a) => a.id === f.aircraftId) : oldByName.get(f.type);
+    const id = f.aircraftId || old?.id;
+    const target = id ? nextById.get(id) : next.find((a) => a.name === f.type);
+    if (target && (f.type !== target.name || f.aircraftId !== target.id)) changed.push({ ...f, aircraftId: target.id, type: target.name });
   }
-  backend.saveConfig({ v: 1, aircraft: list });
-  toast('บันทึกรายการแบบอากาศยานแล้ว');
+  if (changed.length) backend.saveMany(changed);
+  if (state.opening) {
+    const o = { ...state.opening, byType: {}, byTypeDuty: {}, byAircraftDuty: { ...(state.opening.byAircraftDuty || {}) } };
+    const renamed = new Map(previous.map((a) => [a.name, nextById.get(a.id)?.name || a.name]));
+    for (const [name, value] of Object.entries(state.opening.byType || {})) { const n = renamed.get(name) || name; o.byType[n] = (o.byType[n] || 0) + value; }
+    for (const [key, value] of Object.entries(state.opening.byTypeDuty || {})) {
+      const split = key.lastIndexOf('|'); const name = key.slice(0, split); const duty = key.slice(split + 1);
+      const n = renamed.get(name) || name; const nk = `${n}|${duty}`; o.byTypeDuty[nk] = (o.byTypeDuty[nk] || 0) + value;
+      const aircraft = oldByName.get(name) || next.find((a) => a.name === name); if (aircraft) { o.byAircraftDuty[aircraft.id] ||= {}; if (o.byAircraftDuty[aircraft.id][duty] == null) o.byAircraftDuty[aircraft.id][duty] = value; }
+    }
+    backend.saveOpening(o);
+  }
+  L.setAircraft(next);
+  backend.saveConfig({ version: 2, v: 2, aircraft: next });
+  toast('บันทึกรายการ Aircraft และ Flight Duties แล้ว');
+  renderTypeChips();
+  renderCurrent();
 }
 
 function initAircraftEditor() {
   $('#btn-aircraft').addEventListener('click', openAircraftDialog);
   $('#ac-add').addEventListener('click', () => {
     syncAcDraft();
-    if (acDraft.length >= L.MAX_AIRCRAFT) return;
-    acDraft.push({ name: '', kind: 'single', orig: null });
+    acDraft.push({ id: uuid(), name: '', kind: 'single', duties: ['CP/PI', 'PC'], active: true, origName: null });
     renderAcRows();
     document.querySelectorAll('#ac-rows .ac-name')[acDraft.length - 1]?.focus();
   });
   $('#ac-default').addEventListener('click', () => {
-    const cur = new Set(L.AIRCRAFT);
-    acDraft = L.DEFAULT_AIRCRAFT.map((a) => ({ ...a, orig: cur.has(a.name) ? a.name : null }));
+    const cur = new Map(L.getAircraft().map((a) => [a.name, a]));
+    acDraft = L.DEFAULT_AIRCRAFT.map((a) => ({ ...a, id: cur.get(a.name)?.id || a.id, origName: cur.has(a.name) ? a.name : null }));
     renderAcRows();
   });
   $('#ac-clear').addEventListener('click', () => {
     syncAcDraft();
-    acDraft = [{ name: '', kind: 'single', orig: null }];
+    acDraft = [{ id: uuid(), name: '', kind: 'single', duties: ['CP/PI', 'PC'], active: true, origName: null }];
     renderAcRows();
   });
   $('#ac-rows').addEventListener('click', (e) => {
@@ -707,37 +748,77 @@ function initAircraftEditor() {
     if (!b) return;
     syncAcDraft();
     const i = Number(b.closest('.ac-row').dataset.i);
-    if (b.dataset.act === 'del') acDraft.splice(i, 1);
-    else if (b.dataset.act === 'up' && i > 0) [acDraft[i - 1], acDraft[i]] = [acDraft[i], acDraft[i - 1]];
+    if (b.dataset.act === 'del') {
+      const a = acDraft[i];
+      if (a.origName && usedAircraftCount(a.origName)) { a.active = false; /* retain row and history */ toast(`${a.origName} มีประวัติ จึงปิดใช้งานแทนการลบ`); }
+      else acDraft.splice(i, 1);
+    } else if (b.dataset.act === 'up' && i > 0) [acDraft[i - 1], acDraft[i]] = [acDraft[i], acDraft[i - 1]];
     else if (b.dataset.act === 'down' && i < acDraft.length - 1) [acDraft[i + 1], acDraft[i]] = [acDraft[i], acDraft[i + 1]];
     renderAcRows();
   });
   $('#form-aircraft').addEventListener('submit', (e) => {
-    if (e.submitter && e.submitter.value !== 'save') return; // ยกเลิก → ปิดตามปกติ
+    if (e.submitter && e.submitter.value !== 'save') return;
     syncAcDraft();
-    const list = acDraft.map(({ name, kind }) => ({ name, kind }));
+    const list = acDraft.map((a, i) => ({ id: a.id || uuid(), name: a.name, kind: a.kind, duties: a.duties, active: a.active !== false, sortOrder: i + 1 }));
     let err = L.validateAircraft(list);
-    const renames = new Map();
     if (!err) {
-      const kept = new Set(acDraft.filter((a) => a.orig).map((a) => a.orig));
-      for (const cur of L.AIRCRAFT) {
-        const n = usedAircraftCount(cur);
-        if (!kept.has(cur) && n) { err = `แบบ ${cur} ยังมีข้อมูลอยู่ (${n > 1 || state.flights.some((f) => f.type === cur) ? 'เที่ยวบิน/ยอดยกมา' : 'ยอดยกมา'}) จึงลบไม่ได้ ให้เปลี่ยนชื่อในแถวเดิมแทน`; break; }
+      const keptIds = new Set(list.map((a) => a.id));
+      for (const old of L.getAircraft()) {
+        if (!keptIds.has(old.id) && usedAircraftCount(old.name)) { err = `แบบ ${old.name} ยังมีข้อมูลอยู่ จึงลบถาวรไม่ได้ ให้ปิดใช้งานแทน`; break; }
       }
-      for (const a of acDraft) if (a.orig && a.orig !== a.name) renames.set(a.orig, a.name);
     }
     if (err) { e.preventDefault(); $('#ac-error').textContent = err; $('#ac-error').hidden = false; return; }
-    commitAircraft(list, renames);
+    commitAircraft(list);
   });
 }
 
 function applyConfig(cfg) {
   state.config = cfg;
-  const list = cfg?.aircraft && !L.validateAircraft(cfg.aircraft) ? cfg.aircraft : L.DEFAULT_AIRCRAFT;
+  const raw = cfg?.aircraft;
+  const normalized = Array.isArray(raw) ? L.normalizeAircraft(raw) : L.DEFAULT_AIRCRAFT;
+  const list = L.validateAircraft(normalized) ? L.DEFAULT_AIRCRAFT : normalized;
   L.setAircraft(list);
+  state.flights = state.flights.map(L.sanitizeFlight).filter(Boolean); // attach stable IDs after config snapshot arrives; no write until migration is confirmed
   const editing = state.editing ? state.flights.find((x) => x.id === state.editing) : null;
   renderTypeChips(editing?.type || null);
   renderCurrent();
+}
+
+// ----- ตรวจสอบและ Migration Data Model v1 -> v2 (Prepare / Preview / Backup / Commit)
+async function migrateDataModelV2() {
+  if (firebaseReady && state.status !== 'synced') {
+    toast('ยังไม่ย้ายข้อมูล: กรุณารอให้ Firebase ซิงค์เสร็จและมีสถานะ “ซิงค์แล้ว” ก่อน', 5500);
+    return;
+  }
+  const preview = L.prepareMigrationV2({ aircraft: L.getAircraft(), flights: state.rawFlights, opening: state.rawOpening });
+  const q = preview.dataQuality;
+  const lines = [
+    `Aircraft: ${preview.config.aircraft.length} แบบ`,
+    `Flight Records: ${preview.flights.filter((x) => x.migrated).length} รายการ`,
+    `ชั่วโมงบินที่ต้องตรวจสอบ: ${q.invalidHourFlights} รายการ`,
+    `Legacy/Unconfigured Duty: ${q.legacyDutyFlights} รายการ`,
+    `Aircraft ที่ไม่พบใน Config: ${q.unknownAircraftFlights} รายการ`,
+    `Opening Balance ที่ยังเชื่อม Aircraft ไม่ได้: ${q.unresolvedOpeningEntries} รายการ`,
+    `Opening Balance ที่มีปัญหาความละเอียดชั่วโมง: ${q.openingIssues} รายการ`,
+  ];
+  if (!confirm(`Migration Preview — Data Model v2\n\n${lines.join('\n')}\n\nระบบจะไม่ปัดเศษชั่วโมงและไม่เปลี่ยน Legacy Duty\n\nต้องการดำเนินการต่อเพื่อสร้างไฟล์สำรองหรือไม่?`)) return;
+
+  const backup = {
+    app: 'pilot-logbook', version: 1, exportedAt: new Date().toISOString(),
+    config: state.config, aircraft: L.getAircraft(), opening: state.rawOpening, flights: L.sortFlights(state.rawFlights),
+  };
+  download(`pilot-logbook-pre-v2-backup-${L.todayISO()}.json`, new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
+  if (!confirm('ได้สั่งดาวน์โหลดไฟล์สำรองก่อน Migration แล้วหรือไม่?\n\nกดตกลงเพื่อ Commit ข้อมูล v2 หรือยกเลิกเพื่อหยุดโดยไม่เปลี่ยนข้อมูล')) return;
+
+  try {
+    const validFlights = preview.flights.filter((x) => x.migrated).map((x) => x.migrated);
+    if (validFlights.length) await backend.saveMany(validFlights);
+    if (preview.opening) await backend.saveOpening(preview.opening);
+    await backend.saveConfig(preview.config); // config v2 is the commit marker; retrying earlier phases is idempotent
+    toast(`Migration v2 เสร็จแล้ว · ${validFlights.length} เที่ยวบิน · ตรวจสอบ Data Quality ${q.invalidHourFlights + q.legacyDutyFlights + q.unknownAircraftFlights + q.unresolvedOpeningEntries + q.openingIssues} รายการ`, 6500);
+  } catch (e) {
+    toast(`Migration ยังยืนยันผลไม่ได้: ${e.message || e} — เก็บไฟล์สำรองไว้ก่อนตรวจสอบ`, 7000);
+  }
 }
 
 // ----- ต้อนรับผู้ใช้ใหม่
@@ -773,9 +854,9 @@ function renderWelcome() {
   } else if (step === 1) {
     html = `
       <h1>แบบอากาศยานของคุณ</h1>
-      <p class="lead">เลือกแบบที่คุณบิน (สูงสุด ${L.MAX_AIRCRAFT} แบบ) แก้ภายหลังได้</p>
+      <p class="lead">เลือกแบบอากาศยานที่คุณบิน แก้ไขและกำหนดหน้าที่ได้ภายหลัง</p>
       <div class="chips-static">${L.AIRCRAFT.map((n) => `<span class="pill" style="--t:${typeColor(n)}"><i></i>${esc(n)} <small>${L.KIND_SHORT[L.kindOf(n)]}</small></span>`).join('')}</div>
-      <p class="muted small">รายการเริ่มต้นเป็นชุดจากสมุดต้นแบบ ถ้าคุณบินแบบอื่น กด “แก้ไขรายการ” เพื่อเปลี่ยนชื่อหรือชนิดเครื่องยนต์ ลำดับมีผลกับไฟล์ Excel: ใส่แบบที่บินบ่อยและมีหลายหน้าที่ไว้ลำดับต้น</p>
+      <p class="muted small">รายการเริ่มต้นเป็นชุดจากสมุดต้นแบบ ถ้าคุณบินแบบอื่น กด “แก้ไขรายการ” เพื่อเพิ่ม Aircraft เปลี่ยนชื่อ/ชนิดเครื่องยนต์ และเลือก Flight Duties ลำดับมีผลกับช่องใน Excel Template รุ่นเดิม</p>
       <div class="w-actions">
         <button class="btn block" data-w="edit">แก้ไขรายการแบบอากาศยาน</button>
         <div class="w-actions row"><button class="btn" data-w="back">ย้อนกลับ</button><button class="btn primary" data-w="next">ถัดไป</button></div>
@@ -863,7 +944,8 @@ async function importXlsx(file) {
     let opening = null;
     let ord = 0;
     let unreadable = 0;
-    let dutyFixed = 0;
+    let invalidPrecision = 0;
+    let legacyDuties = 0;
     const ordBase = state.flights.length ? Math.max(...state.flights.map((f) => L.num(f.ord))) + 1 : 0; // ต่อท้ายข้อมูลเดิม ไม่แทรกกลาง
     let slotNames = [];
     let fileList = [];
@@ -877,7 +959,7 @@ async function importXlsx(file) {
         fileList = L.sheetAircraft(ws);
         if (rows[22]) {
           const o = L.sanitizeOpening(L.parseOpening(rows[22], slotNames.some(Boolean) ? slotNames : L.AIRCRAFT));
-          if (o && o.hours > 0) opening = o;
+          if (o && (o.hours > 0 || o._dataIssues?.length || Object.keys(o.byType || {}).length || Object.keys(o.byTypeDuty || {}).length)) opening = o;
         }
       }
       for (let i = 3; i < rows.length; i++) {
@@ -885,10 +967,11 @@ async function importXlsx(file) {
         if (raw) {
           raw.id = uuid();
           raw.ord = ordBase + ord++;
-          // sanitize: จำกัดความยาว, แก้ duty/SOLO, ปัดตัวเลข, คลิปสภาพการบิน
+          // Preserve source values; invalid precision and legacy duties are flagged, never coerced.
           const f = L.sanitizeFlight(raw);
           if (f) {
-            if (f._dutyFixed) { dutyFixed++; delete f._dutyFixed; }
+            if (f._dataIssues?.some((x) => x.code === 'INVALID_HOUR_PRECISION')) invalidPrecision++;
+            if (f._dataIssues?.some((x) => x.code === 'LEGACY_DUTY' || x.code === 'UNCONFIGURED_DUTY')) legacyDuties++;
             incoming.push(f);
           } else unreadable++;
         } else if (L.isUnreadableDataRow(rows[i], i)) unreadable++;
@@ -903,33 +986,41 @@ async function importXlsx(file) {
       && confirm(`ไฟล์นี้ใช้แบบอากาศยาน: ${label(fileList)}\n\nตั้งเป็นรายการแบบอากาศยานของคุณไหม?\n(ถ้ากดยกเลิก จะใช้รายการปัจจุบัน: ${label(L.getAircraft())})`)) newList = fileList;
     const nameErr = (list) => list.map((a) => a.name).find((n) => !L.NAME_RE.test(n));
     if (newList && nameErr(newList)) { alert(`ชื่อแบบอากาศยานในไฟล์ “${nameErr(newList)}” ใช้ไม่ได้ (ใช้ได้เฉพาะ A–Z ตัวเลข และ - . / เว้นวรรค ไม่เกิน 12 ตัว) กรุณาแก้ชื่อในไฟล์แล้วนำเข้าใหม่`); return; }
-    const base = newList ?? L.getAircraft();
+    const base = L.normalizeAircraft(newList ?? L.getAircraft());
     const usedTypes = new Set(incoming.map((f) => f.type));
     if (opening) Object.keys(opening.byType).forEach((k) => usedTypes.add(k));
     const unknown = [...usedTypes].filter((t) => !base.some((a) => a.name === t));
     if (unknown.length) {
-      if (base.length + unknown.length > L.MAX_AIRCRAFT) {
-        alert(`ไฟล์มีแบบอากาศยานที่ไม่อยู่ในรายการของคุณ: ${unknown.join(', ')}\n\nรายการเต็มแล้ว (สูงสุด ${L.MAX_AIRCRAFT} แบบ) กรุณาแก้รายการที่ ตั้งค่า → แบบอากาศยานของฉัน หรือแก้ชื่อในไฟล์ แล้วนำเข้าใหม่`);
-        return;
-      }
       if (!confirm(`ไฟล์มีแบบอากาศยานที่ยังไม่มีในรายการ: ${unknown.join(', ')}\n\nเพิ่มเข้ารายการให้ไหม? (ตั้งชนิดเครื่องยนต์ให้เดาเอง ปรับได้ที่ ตั้งค่า → แบบอากาศยานของฉัน)`)) return;
-      newList = [...base, ...unknown.map((name) => ({ name, kind: L.guessKind(name) }))];
+      newList = [...base, ...unknown.map((name) => ({ id: uuid(), name, kind: L.guessKind(name), duties: [...L.DUTIES], active: true }))];
       if (nameErr(newList) || L.validateAircraft(newList)) { alert(`ชื่อแบบอากาศยานในไฟล์ใช้ไม่ได้: ${[...unknown, ...newList.map((x) => x.name)].filter((n, i, arr) => !L.NAME_RE.test(n) && arr.indexOf(n) === i).join(', ') || unknown.join(', ')}\n\nใช้ได้เฉพาะ A–Z ตัวเลข และ - . / เว้นวรรค ไม่เกิน 12 ตัว กรุณาแก้ชื่อในไฟล์แล้วนำเข้าใหม่`); return; }
     }
-    if (newList && L.validateAircraft(newList)) { alert(L.validateAircraft(newList)); return; }
+    if (newList && L.validateAircraft(L.normalizeAircraft(newList))) { alert(L.validateAircraft(L.normalizeAircraft(newList))); return; }
+
+    const importConfig = L.normalizeAircraft(newList ?? L.getAircraft());
+    for (const f of incoming) {
+      const a = importConfig.find((item) => item.name === f.type);
+      f.aircraftId = a?.id || null;
+      if (a) {
+        f._dataIssues = (f._dataIssues || []).filter((x) => x.code !== 'UNKNOWN_AIRCRAFT' && !(x.code === 'UNCONFIGURED_DUTY' && a.duties.includes(f.duty)));
+        if (!a.duties.includes(f.duty) && !f._dataIssues.some((x) => x.code === 'UNCONFIGURED_DUTY')) f._dataIssues.push({ code: 'UNCONFIGURED_DUTY', field: 'duty', value: f.duty });
+      }
+    }
 
     const fresh = L.filterNew(state.flights, incoming);
     const skipped = incoming.length - fresh.length;
     const lines = [`พบ ${incoming.length} เที่ยวบินในไฟล์`, `จะเพิ่มใหม่ ${fresh.length} รายการ${skipped ? ` (ข้ามที่ซ้ำ ${skipped})` : ''}`];
     if (unreadable) lines.push(`⚠ ข้ามแถวที่อ่านไม่ได้ ${unreadable} แถว (วันที่ไม่ใช่รูปแบบวันที่ หรือไม่มีแบบอากาศยาน/ชั่วโมงบิน) ตรวจในไฟล์ก่อน`);
-    if (dutyFixed) lines.push(`⚠ ปรับหน้าที่ ${dutyFixed} รายการ (SOLO กับแบบที่ไม่มีคอลัมน์ หรือค่านอกรายการ → CP/PI)`);
+    if (invalidPrecision) lines.push(`⚠ พบชั่วโมงบินที่ไม่ใช่ขั้นละ 0.1 จำนวน ${invalidPrecision} รายการ — เก็บค่าต้นฉบับไว้ แต่ไม่นำไปรวมยอดจนกว่าจะแก้ไข`);
+    if (opening?._dataIssues?.length) lines.push(`⚠ ยอดยกมามีค่าที่ต้องตรวจสอบ ${opening._dataIssues.length} รายการ — เก็บรายละเอียดไว้ใน Data Quality`);
+    if (legacyDuties) lines.push(`⚠ พบ Legacy/Unconfigured Duty ${legacyDuties} รายการ — เก็บค่าเดิมไว้และแสดงใน Data Quality`);
     if (opening) lines.push(`ยอดยกมาในไฟล์: ${L.fmt(opening.hours)} ชม.`);
     if (!fresh.length && !opening) { toast('ไม่มีข้อมูลใหม่ให้นำเข้า'); return; }
     if (!confirm(`${lines.join('\n')}\n\nนำเข้าเลยไหม?`)) return;
 
-    if (newList) backend.saveConfig({ v: 1, aircraft: newList });
+    if (newList) backend.saveConfig({ version: 2, v: 2, aircraft: L.normalizeAircraft(newList) });
     if (fresh.length) backend.saveMany(fresh);
-    if (opening && (!state.opening?.hours || confirm(`มียอดยกมาอยู่แล้ว (${L.fmt(state.opening.hours)} ชม.)\nแทนที่ด้วยยอดจากไฟล์ (${L.fmt(opening.hours)} ชม.) ไหม?`))) {
+    if (opening && (opening.hours > 0 || opening._dataIssues?.length || Object.keys(opening.byType || {}).length || Object.keys(opening.byTypeDuty || {}).length) && (!state.opening?.hours || confirm(`มียอดยกมาอยู่แล้ว (${L.fmt(state.opening.hours)} ชม.)\nแทนที่ด้วยยอดจากไฟล์ (${L.fmt(opening.hours)} ชม.) ไหม?`))) {
       backend.saveOpening(opening);
     }
     toast(`นำเข้า ${fresh.length} เที่ยวบินแล้ว`);
@@ -943,6 +1034,8 @@ async function exportXlsx() {
   const sorted = sortedFlights();
   if (!sorted.length && !state.opening) { toast('ยังไม่มีข้อมูลให้ส่งออก'); return; }
   const pages = L.paginate(sorted, state.opening);
+  const invalidHours = sorted.filter((f) => f._dataIssues?.some((x) => x.code === 'INVALID_HOUR_PRECISION')).length + (state.opening?._dataIssues || []).filter((x) => x.code === 'INVALID_HOUR_PRECISION').length;
+  if (invalidHours) { toast(`ยังส่งออกไม่ได้: พบชั่วโมงที่ไม่ใช่ 0.1 จำนวน ${invalidHours} รายการ กรุณาตรวจสอบ/แก้ไขก่อน เพื่อไม่ให้ Excel มีค่าผิดข้อกำหนด`, 6500); return; }
   if (pages.length > MAX_PAGES) { toast(`ข้อมูลเกิน ${MAX_PAGES * L.PAGE_SIZE} รายการ (แม่แบบมี ${MAX_PAGES} ชีต)`); return; }
   const btn = $('#btn-export-xlsx');
   btn.disabled = true;
@@ -959,13 +1052,10 @@ async function exportXlsx() {
         return file.async('string');
       },
       setText: (p, t) => { text.set(p, t); zip.file(p, t); },
-    }, pages, state.opening, L.getAircraft());
+    }, pages, state.opening, L.getAircraft(), sorted);
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     download(`Pilot_Logbook_${L.todayISO()}.xlsx`, blob);
-    const gaps = L.coverageGaps(sorted, state.opening);
-    toast(gaps
-      ? `ส่งออกแล้ว · มี ${gaps} รายการ (เที่ยวบิน/ยอดยกมา) ที่หน้าที่ไม่มีคอลัมน์รองรับใน Excel (ไม่ได้ลงช่องแบบ × หน้าที่)`
-      : 'ส่งออกแล้ว — เปิดด้วย Excel / Google Sheets', gaps ? 6500 : 3200);
+    toast('ส่งออกแล้ว — ชีต Aircraft Summary รองรับ Aircraft/Duty ตามการตั้งค่าปัจจุบัน; Summary เดิมยังคงรูปแบบแม่แบบ 8 ช่อง');
   } catch (e) {
     toast(e.message || 'ส่งออกไม่สำเร็จ');
   } finally {
@@ -989,7 +1079,7 @@ async function downloadTemplate() {
 }
 
 function exportJson() {
-  const data = { app: 'pilot-logbook', version: 1, exportedAt: new Date().toISOString(), opening: state.opening, aircraft: L.getAircraft(), flights: sortedFlights() };
+  const data = { app: 'pilot-logbook', version: 2, exportedAt: new Date().toISOString(), opening: state.rawOpening, aircraft: L.getAircraft(), flights: L.sortFlights(state.rawFlights) };
   download(`pilot-logbook-backup-${L.todayISO()}.json`, new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
 }
 
@@ -997,14 +1087,28 @@ async function importJson(file) {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'pilot-logbook' || !Array.isArray(data.flights)) throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองของแอป');
-    const flights = data.flights.map(L.sanitizeFlight).filter(Boolean);
+    const aircraft = Array.isArray(data.aircraft) ? L.normalizeAircraft(data.aircraft) : null;
+    const activeConfig = aircraft || L.getAircraft();
+    const ids = new Map(activeConfig.map((a) => [a.name, a.id]));
+    const flights = data.flights.map((source) => {
+      const f = L.sanitizeFlight(source);
+      if (f) {
+        const a = f.aircraftId ? activeConfig.find((item) => item.id === f.aircraftId) : activeConfig.find((item) => item.name === f.type);
+        if (a) {
+          f.aircraftId = a.id;
+          f._dataIssues = (f._dataIssues || []).filter((x) => x.code !== 'UNKNOWN_AIRCRAFT' && !(x.code === 'UNCONFIGURED_DUTY' && a.duties.includes(f.duty)));
+          if (!a.duties.includes(f.duty) && !f._dataIssues.some((x) => x.code === 'UNCONFIGURED_DUTY')) f._dataIssues.push({ code: 'UNCONFIGURED_DUTY', field: 'duty', value: f.duty });
+        } else if (!f.aircraftId) f.aircraftId = ids.get(f.type) || null;
+      }
+      return f;
+    }).filter(Boolean);
     const opening = L.sanitizeOpening(data.opening);
-    const aircraft = data.aircraft && !L.validateAircraft(data.aircraft) ? data.aircraft : null;
+    if (aircraft && L.validateAircraft(aircraft)) throw new Error(L.validateAircraft(aircraft));
     if (data.flights.length !== flights.length) toast(`ข้ามรายการที่ข้อมูลไม่ครบ ${data.flights.length - flights.length} รายการ`, 5000);
-    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${opening ? ' และยอดยกมา' : ''}${aircraft ? ' และรายการแบบอากาศยาน (แทนที่รายการปัจจุบัน)' : ''}?\nรายการที่มีอยู่แล้วจะถูกอัปเดต ไม่ซ้ำซ้อน`)) return;
-    if (aircraft) backend.saveConfig({ v: 1, aircraft });
-    backend.saveMany(flights);
-    if (opening) backend.saveOpening(opening);
+    if (!confirm(`กู้คืน ${flights.length} เที่ยวบิน${opening ? ' และยอดยกมา' : ''}${aircraft ? ' และรายการแบบอากาศยาน (แทนที่รายการปัจจุบัน)' : ''}?\nข้อมูล Legacy Duty และค่าชั่วโมงที่ผิดความละเอียดจะถูกเก็บไว้พร้อมสถานะตรวจสอบ`)) return;
+    if (aircraft) { L.setAircraft(aircraft); await backend.saveConfig({ version: 2, v: 2, aircraft }); }
+    await backend.saveMany(flights);
+    if (opening) await backend.saveOpening(opening);
     toast(`กู้คืนข้อมูลแล้ว (${flights.length} เที่ยวบิน)`);
   } catch (e) {
     toast(e.message || 'กู้คืนไม่สำเร็จ');
@@ -1082,6 +1186,7 @@ async function main() {
   initForm();
   initTheme();
   initAircraftEditor();
+  $('#btn-migrate-v2').addEventListener('click', migrateDataModelV2);
   initWelcome();
 
   document.querySelectorAll('#tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -1115,8 +1220,8 @@ async function main() {
   }
 
   backend.start({
-    onFlights(list) { state.flights = list; refreshSuggestions(); renderCurrent(); maybeWelcome(); },
-    onOpening(o) { state.opening = o; renderCurrent(); maybeWelcome(); },
+    onFlights(list) { state.rawFlights = list; const cleaned = list.map(L.sanitizeFlight); state.unreadableFlights = list.filter((item, i) => !cleaned[i]); state.flights = cleaned.filter(Boolean); refreshSuggestions(); renderCurrent(); maybeWelcome(); },
+    onOpening(o) { state.rawOpening = o; state.opening = o ? L.sanitizeOpening(o) : null; renderCurrent(); maybeWelcome(); },
     onConfig(c) { applyConfig(c); maybeWelcome(); },
     onSynced() { state.synced = true; maybeWelcome(); },
     onUser(u) {
