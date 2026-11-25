@@ -160,23 +160,6 @@ async function createFirebaseBackend() {
     watch('config', configDoc(), handlers.config);
     watch('opening', openingDoc(), handlers.opening);
     watch('quarantine', quarantineCol(), handlers.quarantine);
-
-    // P2-0: บังคับอ่านจาก server ครั้งหนึ่งตอนเปิดแอป/เปลี่ยนผู้ใช้
-    // กันเคสแคชในเบราว์เซอร์หรือ Service Worker ยังเสิร์ฟข้อมูลเก่า (doc มีอยู่บน server แต่แอปไม่โชว์)
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
-    Promise.all([
-      fs.getDocsFromServer(flightsCol()),
-      fs.getDocFromServer(configDoc()),
-      fs.getDocFromServer(openingDoc()),
-      fs.getDocsFromServer(quarantineCol()),
-    ]).then(([a, b, c, d]) => {
-      lastError = null;
-      handlers.flights(a);
-      handlers.config(b);
-      handlers.opening(c);
-      handlers.quarantine(d);
-      checkSynced();
-    }).catch(fail);
   }
 
   return {
