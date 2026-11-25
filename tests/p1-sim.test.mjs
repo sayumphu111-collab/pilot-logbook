@@ -95,3 +95,17 @@ test('Aircraft Summary ของ SIM หรือ DG เพื่อยังแ
   assert.ok(hoursCols.includes('I'));
   setAircraft(DEFAULT_AIRCRAFT);
 });
+
+test('sanitizeFlight ไม่พังเมื่อ Array.map ส่ง index เข้ามาเป็น argument ที่สอง', () => {
+  setAircraft(config);
+  const source = [
+    { id: 'a', date: '2026-01-01', type: 'AW139', aircraftId: 'ac_aw139', duty: 'CP/PI', hours: 1.0 },
+    { id: 'b', date: '2026-01-02', type: 'SIM', aircraftId: 'sim_1', duty: 'SP', hours: 0.5 },
+  ];
+  const cleaned = source.map(sanitizeFlight); // จำลอง bug เดิมใน app.js
+  assert.equal(cleaned.length, 2);
+  assert.ok(cleaned[0]);
+  assert.ok(cleaned[1]);
+  assert.equal(cleaned[1].aircraftId, 'sim_1');
+  setAircraft(DEFAULT_AIRCRAFT);
+});

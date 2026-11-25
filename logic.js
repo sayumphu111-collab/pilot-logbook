@@ -444,7 +444,8 @@ export function isUnreadableDataRow(row, rowIndex) {
 // ---------- ทำความสะอาดข้อมูลจาก backup/ภายนอก ----------
 export function sanitizeFlight(f, aircraftList = null) {
   if (!f || typeof f !== 'object') return null;
-  const idx = makeIndex(aircraftList || aircraftRecords);
+  // กันเคส map(sanitizeFlight) ส่ง index เข้ามาเป็น aircraftList (ต้องเป็น array เท่านั้น)
+  const idx = makeIndex(Array.isArray(aircraftList) ? aircraftList : aircraftRecords);
   const id = String(f.id ?? '').slice(0, 64);
   const date = String(f.date ?? '');
   const type = String(f.type ?? '').trim().toUpperCase().slice(0, 12);

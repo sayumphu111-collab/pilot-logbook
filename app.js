@@ -1292,7 +1292,8 @@ async function main() {
   }
 
   backend.start({
-    onFlights(list) { state.rawFlights = list; const cleaned = list.map(L.sanitizeFlight); state.unreadableFlights = list.filter((item, i) => !cleaned[i]); state.flights = cleaned.filter(Boolean); refreshSuggestions(); renderCurrent(); maybeWelcome(); },
+    // ต้องส่งแค่ flight เข้า sanitizeFlight — ถ้าใช้ list.map(L.sanitizeFlight) index จะไปตกเป็น aircraftList ทำให้ makeIndex พัง
+    onFlights(list) { state.rawFlights = list; const cleaned = list.map((f) => L.sanitizeFlight(f)); state.unreadableFlights = list.filter((item, i) => !cleaned[i]); state.flights = cleaned.filter(Boolean); refreshSuggestions(); renderCurrent(); maybeWelcome(); },
     onQuarantine(list) { state.quarantine = list || []; },
     onOpening(o) { state.rawOpening = o; state.opening = o ? L.resolveOpening(o, L.getAircraft()) : null; renderCurrent(); maybeWelcome(); },
     onConfig(c) { applyConfig(c); maybeWelcome(); },
