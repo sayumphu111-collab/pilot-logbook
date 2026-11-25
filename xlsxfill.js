@@ -1,6 +1,9 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
-import { AIRCRAFT, CONDS, PAGE_SIZE, addTotals, isDefaultAircraft, isValidHourIncrement, num } from './logic.js';
+import {
+  AIRCRAFT, CONDS, PAGE_SIZE, addTotals, getAircraft, isDefaultAircraft,
+  isRealFlight, isValidHourIncrement, num, resolveAircraft,
+} from './logic.js';
 
 export const MAX_PAGES = 50;
 const FIRST_ROW = 4;
@@ -76,6 +79,10 @@ const COND_COL = { xc: 'T', nightUn: 'U', nvg: 'V', ifr: 'W', imc: 'X' };
 
 export function pageValues(page, aircraft = []) {
   const v = {};
+  const idx = {
+    byId: new Map(aircraft.map((a) => [a.id, a])),
+    byName: new Map(aircraft.map((a) => [a.name, a])),
+  };
   page.rows.forEach((f, i) => {
     const r = FIRST_ROW + i;
     v[`B${r}`] = isoToSerial(f.date);
@@ -85,13 +92,14 @@ export function pageValues(page, aircraft = []) {
     if (f.dest) v[`F${r}`] = f.dest;
     if (f.mission) v[`G${r}`] = f.mission;
     if (f.duty) v[`H${r}`] = f.duty;
-    v[`I${r}`] = num(f.hours);
-    // Hidden export helpers: stable Aircraft ID + valid 0.1-hour marker.
-    const matchedAircraft = f.aircraftId
-      ? aircraft.find((a) => a.id === f.aircraftId)
-      : aircraft.find((a) => a.name === f.type);
+    // I = ชั่วโมงบินจริง (SIM นอก SP ไม่นับเข้า page/last/forward/Q)
+    v[`I${r}`] = isRealFlight(f, idx) ? num(f.hours) : 0;
+    // Hidden export helpers: DE=stable Aircraft ID, DF=valid 0.1-hour marker,
+    // DG=ชั่วโมงที่กรอกทั้งหมด (ใช้ดึงยอด SIM ในชีต S4:S21 แทน I)
+    const matchedAircraft = resolveAircraft(f, idx);
     v[`DE${r}`] = matchedAircraft?.id || f.aircraftId || '';
     v[`DF${r}`] = isValidHourIncrement(f.hours) ? 1 : 0;
+    v[`DG${r}`] = num(f.hours);
     for (const c of CONDS) if (num(f[c.key]) > 0) v[`${COND_COL[c.key]}${r}`] = num(f[c.key]);
     if (f.note) v[`BP${r}`] = f.note;
   });
@@ -108,20 +116,26 @@ const DUTY_BLOCKS = [
 ];
 // SOLO: BN=ช่อง5, BO=ช่อง6
 const SOLO_COLS = { 5: 'BN', 6: 'BO' };
-export function openingValues(o) {
+export function openingValues(o, aircraft = null) {
   const t = o || {};
+  const list = aircraft || getAircraft();
   const v = {};
   const put = (col, x) => { v[`${col}23`] = num(x); };
+  // I23 = ยอดยกมา "ชั่วโมงบินจริง"; J/K ไม่รวม SIM อยู่แล้ว
   put('I', t.hours); put('J', t.single); put('K', t.multi);
-  for (let i = 0; i < 8; i++) put(colLetters(colNum('L') + i), AIRCRAFT[i] ? t.byType?.[AIRCRAFT[i]] : 0);
+  const val = (a, duty) => {
+    if (!a) return 0;
+    const byId = duty ? t.byAircraftDuty?.[a.id]?.[duty] : t.byType?.[a.id];
+    const canonical = duty ? t.byTypeDuty?.[`${a.id}|${duty}`] : undefined;
+    const legacy = duty ? t.byTypeDuty?.[`${a.name}|${duty}`] : t.byType?.[a.name];
+    return byId ?? canonical ?? legacy ?? 0;
+  };
+  for (let i = 0; i < 8; i++) put(colLetters(colNum('L') + i), val(list[i]));
   put('T', t.xc); put('U', t.nightUn); put('V', t.nvg); put('W', t.ifr); put('X', t.imc);
   for (const [duty, start, count] of DUTY_BLOCKS) {
-    for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|${duty}`] : 0);
+    for (let i = 0; i < count; i++) put(colLetters(colNum(start) + i), val(list[i], duty));
   }
-  for (const [slot, col] of Object.entries(SOLO_COLS)) {
-    const i = Number(slot);
-    put(col, AIRCRAFT[i] ? t.byTypeDuty?.[`${AIRCRAFT[i]}|SOLO`] : 0);
-  }
+  for (const [slot, col] of Object.entries(SOLO_COLS)) put(col, val(list[Number(slot)], 'SOLO'));
   return v;
 }
 
@@ -152,6 +166,13 @@ export function renameFormulaNames(xml, slotNames) {
 export function setFormulaText(xml, ref, text) {
   const re = new RegExp(`(<c r="${ref}"(?:\\s+[A-Za-z:]+="[^"]*")*>\\s*${F_OPEN})([\\s\\S]*?)(</f>)`);
   return xml.replace(re, (m, a, b, z) => a + text + z);
+}
+
+// S4:S21 คือสูตรดึงยอด SIM ไปรวมที่ S24 → เปลี่ยนจาก I (ชั่วโมงจริง) ไป DG (ชั่วโมงที่กรอกทั้งหมด)
+// เปลี่ยนเฉพาะ reference $I4 เพื่อไม่ให้ทับชื่อแบบอากาศยานที่ customizeTemplate เปลี่ยนไว้แล้ว
+export function retargetSimHoursColumn(xml) {
+  const re = new RegExp(`(<c r="S4"(?:\\s+[A-Za-z:]+="[^"]*")*>\\s*${F_OPEN})([\\s\\S]*?)(</f>)`);
+  return xml.replace(re, (m, a, body, z) => a + body.replace(/\$I4\b/g, '$DG4') + z);
 }
 
 const engineFormula = (names, r) =>
@@ -212,6 +233,9 @@ function setSummaryCell(xml, ref, spec) {
   return xml.replace(m[0], () => out);
 }
 
+// P0-4: คอลัมน์ engine ของแม่แบบ = N:SIM, O:SINGLE, P:MULTI (ไม่ใช่ M/N/O)
+const SIM_TOTAL_REF = "'S50'!S24";
+
 export function rebuildSummary(xml, aircraft) {
   for (let k = 0; k < 8; k++) {
     const r = 5 + k;
@@ -219,16 +243,23 @@ export function rebuildSummary(xml, aircraft) {
     const cells = {};
     if (a) {
       cells.B = { text: a.name };
-      const refs = (a.duties || []).map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
-      if (a.kind === 'sim' && refs.length) cells.M = { f: refs.map((x) => x.ref).join('+') };
-      else for (const x of refs) {
+      // P1-SIM: ใน Summary เดิม SIM เข้า C:H เฉพาะหน้าที่ SP เท่านั้น
+      // duty อื่นของ SIM ยังอยู่ในชีต Aircraft Summary และคอลัมน์ N (SIM) ตามเดิม
+      const summaryDuties = a.kind === 'sim' ? (a.duties || []).filter((d) => d === 'SP') : (a.duties || []);
+      const refs = summaryDuties.map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
+      for (const x of refs) {
         const col = DUTY_SUMMARY_COL[x.d];
         if (col) cells[col] = { f: x.ref };
       }
-      if (a.kind === 'single') cells.N = { f: `SUM(C${r}:H${r})` };
-      if (a.kind === 'multi') cells.O = { f: `SUM(C${r}:H${r})` };
+      const engineCol = a.kind === 'sim' ? 'N' : a.kind === 'single' ? 'O' : a.kind === 'multi' ? 'P' : null;
+      if (engineCol) {
+        cells[engineCol] = a.kind === 'sim'
+          ? { f: SIM_TOTAL_REF }
+          : { f: `SUM(C${r}:H${r})` };
+      }
     }
-    for (const col of 'BCDEFGHIJKLMNO') xml = setSummaryCell(xml, `${col}${r}`, cells[col] || null);
+    // เฉพาะคอลัมน์ที่ rebuilding เท่านั้น — I:M (สภาพการบิน) และ Q คงค่าจากแม่แบบไว้
+    for (const col of 'BCDEFGHNOP') xml = setSummaryCell(xml, `${col}${r}`, cells[col] || null);
   }
   return xml;
 }
@@ -347,36 +378,51 @@ function registerSheet(workbookXml, relsXml, contentTypesXml, name, target) {
   contentTypesXml = contentTypesXml.replace('</Types>', `<Override PartName="/${target}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
   return { workbookXml, relsXml, contentTypesXml };
 }
-function formulaForDuty(aircraftIdCell, dutyCell) {
+function formulaForDuty(aircraftIdCell, dutyCell, hoursCol = 'I') {
   const parts = [];
   for (let n=1; n<=MAX_PAGES; n++) {
     const sh = `'S${n}'`;
     // Aggregate by stable Aircraft ID, not the editable display name.
+    // SIM ใช้ DG (ชั่วโมงที่กรอกทั้งหมด) เพื่อยังเห็นยอดจำลองแม้ไม่นับเป็นชั่วโมงบินจริง
     // DF=1 excludes invalid precision values even if this module is called outside the UI guard.
-    parts.push(`SUMIFS(${sh}!$I$4:$I$21,${sh}!$DE$4:$DE$21,$${aircraftIdCell},${sh}!$H$4:$H$21,$${dutyCell},${sh}!$DF$4:$DF$21,1)`);
+    parts.push(`SUMIFS(${sh}!$${hoursCol}$4:$${hoursCol}$21,${sh}!$DE$4:$DE$21,$${aircraftIdCell},${sh}!$H$4:$H$21,$${dutyCell},${sh}!$DF$4:$DF$21,1)`);
   }
   return parts.join('+');
 }
 export function buildDynamicAircraftSummary(aircraft, opening = null, flights = []) {
   const rows = [[inlineCell('A1','Aircraft'),inlineCell('B1','Kind'),inlineCell('C1','Flight Duty'),inlineCell('D1','Opening Balance (h)'),inlineCell('E1','Flight Hours (h)'),inlineCell('F1','Total Hours (h)')]];
   let r = 2;
+  const idx = {
+    byId: new Map((aircraft || []).map((a) => [a.id, a])),
+    byName: new Map((aircraft || []).map((a) => [a.name, a])),
+  };
   const openingById = opening?.byAircraftDuty || {};
   const openingByType = opening?.byTypeDuty || {};
   for (const a of aircraft || []) {
     const dutySet = new Set(a.duties || []);
     for (const f of flights || []) {
-      const belongs = f.aircraftId ? f.aircraftId === a.id : f.type === a.name;
+      const belongs = resolveAircraft(f, idx)?.id === a.id;
       if (belongs && f.duty) dutySet.add(f.duty);
     }
-    for (const key of Object.keys(openingByType)) if (key.startsWith(`${a.name}|`)) dutySet.add(key.slice(a.name.length + 1));
+    for (const [key, value] of Object.entries(openingByType)) {
+      const split = key.lastIndexOf('|');
+      const ref = key.slice(0, split);
+      const owner = idx.byId.get(ref) || idx.byName.get(String(ref).trim().toUpperCase());
+      if (owner?.id === a.id) dutySet.add(key.slice(split + 1));
+      else if (ref === a.name) dutySet.add(key.slice(split + 1));
+      void value;
+    }
     for (const duty of Object.keys(openingById[a.id] || {})) dutySet.add(duty);
     for (const duty of dutySet) {
-      const key = `${a.name}|${duty}`;
-      const open = Number(openingById[a.id]?.[duty] ?? openingByType[key] ?? 0);
+      const open = Number(openingById[a.id]?.[duty]
+        ?? openingByType[`${a.id}|${duty}`]
+        ?? openingByType[`${a.name}|${duty}`]
+        ?? 0);
       const ar = String(r);
+      const hoursCol = a.kind === 'sim' ? 'DG' : 'I';
       rows.push([
         inlineCell(`A${r}`,a.name), inlineCell(`B${r}`,a.kind), inlineCell(`C${r}`,duty),
-        numberCell(`D${r}`,open), formulaCell(`E${r}`,formulaForDuty('G'+ar,'C'+ar)), formulaCell(`F${r}`,`D${r}+E${r}`),
+        numberCell(`D${r}`,open), formulaCell(`E${r}`,formulaForDuty('G'+ar,'C'+ar,hoursCol)), formulaCell(`F${r}`,`D${r}+E${r}`),
         inlineCell(`G${r}`,a.id || ''),
       ]);
       r++;
@@ -426,18 +472,20 @@ async function addDynamicSheets(io, aircraft, opening, flights) {
 }
 
 
-// Reserve hidden columns DE:DF for export-only metadata; visible logbook layout remains unchanged.
+// Reserve hidden columns DE:DG for export-only metadata; visible logbook layout remains unchanged.
+// DE=Aircraft ID, DF=0.1-hour marker, DG=logged hours (SIM detail independent from real hours).
 export function addHiddenExportColumns(xml) {
   xml = xml.replace(/(<dimension\b[^>]*\bref="[A-Z]+\d+:)([A-Z]+)(\d+)("[^>]*\/>)/, (m, a, lastCol, row, z) => {
     const current = colNum(lastCol);
-    return a + colLetters(Math.max(current, colNum('DF'))) + row + z;
+    return a + colLetters(Math.max(current, colNum('DG'))) + row + z;
   });
+  const colXml = '<col min="109" max="111" width="0" hidden="1" customWidth="1"/>';
   if (/<cols>[\s\S]*?<\/cols>/.test(xml)) {
-    if (!/<col\b[^>]*\bmin="109"[^>]*\bmax="110"[^>]*\bhidden="1"/.test(xml)) {
-      xml = xml.replace('</cols>', '<col min="109" max="110" width="0" hidden="1" customWidth="1"/></cols>');
+    if (!/<col\b[^>]*\bmin="109"[^>]*\bmax="111"[^>]*\bhidden="1"/.test(xml)) {
+      xml = xml.replace('</cols>', `${colXml}</cols>`);
     }
   } else {
-    xml = xml.replace(/<sheetFormatPr\b[^>]*\/>/, (m) => `${m}<cols><col min="109" max="110" width="0" hidden="1" customWidth="1"/></cols>`);
+    xml = xml.replace(/<sheetFormatPr\b[^>]*\/>/, (m) => `${m}<cols>${colXml}</cols>`);
   }
   return xml;
 }
@@ -464,28 +512,30 @@ export async function fillWorkbook(io, pages, opening, aircraft = null, flights 
     throw new Error(`ข้อมูลเกิน ${MAX_PAGES * PAGE_SIZE} รายการ (${MAX_PAGES} ชีต) — ต้องเพิ่มชีตในแม่แบบก่อน`);
   }
   // รายการแบบอากาศยานไม่ใช่ค่าเริ่มต้น → ปรับสูตร/หัวคอลัมน์ในแม่แบบก่อนกรอก
-  // (ชีต Summary สร้าง/คำนวณในไฟล์แม่แบบ ไม่ถูกเขียนทับด้วยโค้ดอีกต่อไป)
+  const effectiveAircraft = aircraft || getAircraft();
   if (aircraft && !isDefaultAircraft(aircraft)) await customizeTemplate(io, aircraft);
   const wbXml0 = await getText('xl/workbook.xml');
   const paths = sheetPaths(wbXml0, await getText('xl/_rels/workbook.xml.rels'));
   setText('xl/workbook.xml', ensureFullCalcOnLoad(wbXml0)); // ให้ Excel recalc ตอนเปิด
+  // Summary ต้องถูก rebuild ทุกครั้ง แม้ใช้ config เริ่มต้น (แม่แบบดั้งเดิมยังให้ SIM เข้า C:H ทุก duty)
+  if (paths.Summary) setText(paths.Summary, rebuildSummary(await getText(paths.Summary), effectiveAircraft));
   // ทุกชีตใช้ช่อง Hours เป็นตัวเลขทศนิยม 0–24 ไม่ใช่ dropdown 0.1–5.0
   for (let n = 1; n <= MAX_PAGES; n++) {
     const path = paths[`S${n}`];
     if (!path) continue;
-    setText(path, addHiddenExportColumns(retargetHoursValidation(await getText(path))));
+    setText(path, addHiddenExportColumns(retargetHoursValidation(retargetSimHoursColumn(await getText(path)))));
   }
   for (const p of pages) {
     const path = paths[`S${p.n}`];
     if (!path) throw new Error(`ไม่พบชีต S${p.n} ในแม่แบบ`);
-    let values = pageValues(p, aircraft || []);
-    if (p.n === 1 && opening) values = { ...values, ...openingValues(opening) };
+    let values = pageValues(p, effectiveAircraft);
+    if (p.n === 1 && opening) values = { ...values, ...openingValues(opening, effectiveAircraft) };
     setText(path, fillSheetXml(await getText(path), values));
   }
   if (aircraft) await addDynamicSheets(io, aircraft, opening, flights);
   // ยอดยกมาต้องใส่แม้ยังไม่มีเที่ยวบิน
   if (!pages.length && opening) {
     const path = paths.S1;
-    setText(path, fillSheetXml(await getText(path), openingValues(opening)));
+    setText(path, fillSheetXml(await getText(path), openingValues(opening, effectiveAircraft)));
   }
 }

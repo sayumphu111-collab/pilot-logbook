@@ -1,12 +1,12 @@
 // logic.js — ตรรกะล้วน ไม่แตะ DOM / Firebase (ทดสอบด้วย Node ได้)
+// Data Model v2: aircraftId คือ primary key, ชื่อเป็น display/legacy compatibility
 
 export const DUTIES = ['CP/PI', 'PC', 'MP', 'IP', 'SP', 'SOLO'];
 // รายการภารกิจ (สะกด Flight Training ให้ถูกต้อง; ข้อมูลเก่าที่สะกด Trainning ยังนำเข้าได้)
 export const MISSIONS = ['Ferry Flight', 'Parachute', 'Air Transportation', 'Air Medivac', 'Flight Training', 'Special Operation', 'Standardization', 'Other', 'VVIP', 'VIP'];
 
 // ---------- Aircraft Configuration v2 ----------
-// Stable IDs are primary keys; names remain as compatibility/display fields.
-export const MAX_AIRCRAFT = Infinity; // App data is not limited by the legacy 8-slot Excel template.
+export const MAX_AIRCRAFT = Infinity;
 export const KIND_LABEL = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกบินจำลอง (SIM)' };
 export const KIND_SHORT = { single: 'เครื่องยนต์เดียว', multi: 'หลายเครื่องยนต์', sim: 'เครื่องฝึกจำลอง' };
 const LEGACY_DEFAULTS = [
@@ -21,17 +21,37 @@ const LEGACY_DEFAULTS = [
 ];
 const slugId = (name) => `ac_${String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown'}`;
 export const DEFAULT_AIRCRAFT = LEGACY_DEFAULTS.map((a) => ({ ...a, id: slugId(a.name), active: true }));
-export const AIRCRAFT = [];
-export const SINGLE = new Set();
-export const MULTI = new Set();
-export const SIMS = new Set();
+
+export const AIRCRAFT = [];                 // display names (legacy-facing)
+export const SINGLE = new Set();            // display names (legacy-facing)
+export const MULTI = new Set();             // display names (legacy-facing)
+export const SIMS = new Set();              // display names (legacy-facing)
+export const SINGLE_IDS = new Set();        // canonical
+export const MULTI_IDS = new Set();         // canonical
+export const SIM_IDS = new Set();           // canonical
 export const AIRCRAFT_BY_ID = new Map();
 export const AIRCRAFT_BY_NAME = new Map();
+
+let aircraftRecords = [];
+let index = { byId: new Map(), byName: new Map() };
+
+function makeIndex(list = []) {
+  const byId = new Map();
+  const byName = new Map();
+  for (const a of list || []) {
+    if (!a) continue;
+    if (!byId.has(a.id)) byId.set(a.id, a);
+    if (!byName.has(a.name)) byName.set(a.name, a);
+  }
+  return { byId, byName };
+}
+const upper = (v) => String(v ?? '').trim().toUpperCase();
+const resolveRef = (ref, idx = index) => idx.byId.get(String(ref ?? '')) || idx.byName.get(upper(ref)) || null;
 
 export function normalizeAircraft(list = []) {
   const used = new Set();
   return list.map((a, i) => {
-    const name = String(a?.name ?? '').trim().toUpperCase();
+    const name = upper(a?.name);
     let id = String(a?.id || slugId(name));
     if (used.has(id)) id = `${id}_${i + 1}`;
     used.add(id);
@@ -43,24 +63,44 @@ export function normalizeAircraft(list = []) {
 
 export function setAircraft(list) {
   const normalized = normalizeAircraft(list);
-  AIRCRAFT.length = 0; SINGLE.clear(); MULTI.clear(); SIMS.clear(); AIRCRAFT_BY_ID.clear(); AIRCRAFT_BY_NAME.clear();
+  aircraftRecords = normalized;
+  index = makeIndex(normalized);
+  AIRCRAFT.length = 0;
+  SINGLE.clear(); MULTI.clear(); SIMS.clear();
+  SINGLE_IDS.clear(); MULTI_IDS.clear(); SIM_IDS.clear();
+  AIRCRAFT_BY_ID.clear(); AIRCRAFT_BY_NAME.clear();
   for (const a of normalized) {
     AIRCRAFT.push(a.name);
     AIRCRAFT_BY_ID.set(a.id, a);
     AIRCRAFT_BY_NAME.set(a.name, a);
     (a.kind === 'multi' ? MULTI : a.kind === 'sim' ? SIMS : SINGLE).add(a.name);
+    (a.kind === 'multi' ? MULTI_IDS : a.kind === 'sim' ? SIM_IDS : SINGLE_IDS).add(a.id);
   }
   return normalized;
 }
-export const kindOf = (name) => (MULTI.has(name) ? 'multi' : SIMS.has(name) ? 'sim' : 'single');
-export const getAircraft = () => AIRCRAFT.map((name) => ({ ...(AIRCRAFT_BY_NAME.get(name) || {}), name, kind: kindOf(name) }));
-export const aircraftByName = (name) => AIRCRAFT_BY_NAME.get(String(name || '').trim().toUpperCase()) || null;
-export const aircraftById = (id) => AIRCRAFT_BY_ID.get(String(id || '')) || null;
+export const getAircraft = () => aircraftRecords.map((a) => ({ ...a }));
+export const kindOf = (name) => resolveRef(name)?.kind || (SIMS.has(upper(name)) ? 'sim' : MULTI.has(upper(name)) ? 'multi' : 'single');
+export const aircraftByName = (name) => AIRCRAFT_BY_NAME.get(upper(name)) || null;
+export const aircraftById = (id) => AIRCRAFT_BY_ID.get(String(id ?? '')) || null;
+
+// P1-1: resseolve ด้วย id ก่อนเสมอ; unknown id ห้าม rebind ด้วยชื่อ (กัน record สวม identity)
+export function resolveAircraft(f, idx = index) {
+  const id = String(f?.aircraftId ?? '').trim();
+  if (id) return idx.byId.get(id) || null;
+  return resolveRef(f?.type, idx);
+}
+function typeKey(f, idx = index) {
+  return resolveAircraft(f, idx)?.id || upper(f?.type) || 'UNKNOWN';
+}
+
 export const dutiesForAircraft = (typeOrId) => {
-  const a = AIRCRAFT_BY_ID.get(String(typeOrId || '')) || AIRCRAFT_BY_NAME.get(String(typeOrId || '').trim().toUpperCase());
+  const a = AIRCRAFT_BY_ID.get(String(typeOrId ?? '')) || AIRCRAFT_BY_NAME.get(upper(typeOrId));
   return a ? [...a.duties] : [...DUTIES];
 };
-export const sameAircraft = (a, b) => { const aa = normalizeAircraft(a); const bb = normalizeAircraft(b); return aa.length === bb.length && aa.every((x, i) => x.id === bb[i].id && x.name === bb[i].name && x.kind === bb[i].kind && x.active === bb[i].active && x.sortOrder === bb[i].sortOrder && JSON.stringify(x.duties) === JSON.stringify(bb[i].duties)); };
+export const sameAircraft = (a, b) => {
+  const aa = normalizeAircraft(a); const bb = normalizeAircraft(b);
+  return aa.length === bb.length && aa.every((x, i) => x.id === bb[i].id && x.name === bb[i].name && x.kind === bb[i].kind && x.active === bb[i].active && x.sortOrder === bb[i].sortOrder && JSON.stringify(x.duties) === JSON.stringify(bb[i].duties));
+};
 export const isDefaultAircraft = (list) => sameAircraft(normalizeAircraft(list), DEFAULT_AIRCRAFT);
 setAircraft(DEFAULT_AIRCRAFT);
 
@@ -83,12 +123,12 @@ export function validateAircraft(list) {
   return '';
 }
 
-// Legacy workbook slot mapping is retained only for Excel compatibility checks.
+// Legacy Excel slot mapping is retained only for Excel compatibility checks.
 export function slotDuties(i) { return DEFAULT_AIRCRAFT[i]?.duties || ['CP/PI']; }
 export function soloAircraftNames() { return new Set(getAircraft().filter((a) => a.duties.includes('SOLO')).map((a) => a.name)); }
-export function isSoloAllowed(type) { return dutiesForAircraft(type).includes('SOLO'); }
+export const isSoloAllowed = (type) => dutiesForAircraft(type).includes('SOLO');
 
-// A value is valid only when it is an exact 0.1-hour increment (within FP tolerance).
+// ---------- ชั่วโมง ----------
 export function hoursToTenths(value) {
   const n = num(value);
   if (!Number.isFinite(n) || n < 0) return null;
@@ -102,16 +142,21 @@ export const isValidHourIncrement = (value, { allowZero = false, max = Infinity 
 };
 const addHours = (a, b) => ((hoursToTenths(a) ?? 0) + (hoursToTenths(b) ?? 0)) / 10;
 
-export function coverageGaps(flights, opening = null) {
+// P1-SIM: SIM เป็นชั่วโมงบินจริงเฉพาะหน้าที่ SP; นอกนั้นยังอยู่ใน sim/loggedHours แต่ไม่เข้า hours
+export const isSimFlight = (f, idx = index) => resolveAircraft(f, idx)?.kind === 'sim';
+export const isRealFlight = (f, idx = index) => !isSimFlight(f, idx) || upper(f?.duty) === 'SP';
+
+export function coverageGaps(flights, opening = null, aircraftList = null) {
+  const idx = makeIndex(aircraftList || aircraftRecords);
+  const supported = (ref, duty) => { const a = resolveRef(ref, idx); return !!a && a.duties.includes(duty); };
   let n = 0;
-  const supported = (type, duty) => { const a = aircraftById(type) || aircraftByName(type); return !!a && a.duties.includes(duty); };
-  for (const f of flights) if (!supported(f.aircraftId || f.type, f.duty)) n++;
+  for (const f of flights) if (!supported(resolveAircraft(f, idx)?.id, f.duty)) n++;
   const checked = new Set();
   for (const [key, value] of Object.entries(opening?.byTypeDuty || {})) {
     if (num(value) <= 0) continue;
-    const split = key.lastIndexOf('|'); const type = key.slice(0, split); const duty = key.slice(split + 1);
-    const a = aircraftByName(type); if (a) checked.add(`${a.id}|${duty}`);
-    if (!supported(type, duty)) n++;
+    const split = key.lastIndexOf('|'); const ref = key.slice(0, split); const duty = key.slice(split + 1);
+    const a = resolveRef(ref, idx); if (a) checked.add(`${a.id}|${duty}`);
+    if (!supported(ref, duty)) n++;
   }
   for (const [id, duties] of Object.entries(opening?.byAircraftDuty || {})) for (const [duty, value] of Object.entries(duties || {})) {
     if (num(value) > 0 && !checked.has(`${id}|${duty}`) && !supported(id, duty)) n++;
@@ -119,23 +164,24 @@ export function coverageGaps(flights, opening = null) {
   return n;
 }
 
-// Coverage of the current fixed 8-slot Excel template (not the flexible app configuration).
+// Coverage ของแม่แบบ 8 ช่องจริง (ไม่ใช่ config ที่ยืดหยุ่น)
 export function excelCoverageGaps(flights, opening = null, aircraft = getAircraft()) {
+  const idx = makeIndex(aircraft);
   const indexByName = new Map(aircraft.map((a, i) => [a.name, i]));
   const indexById = new Map(aircraft.map((a, i) => [a.id, i]));
-  const supports = (typeOrId, duty) => {
-    const i = indexById.has(typeOrId) ? indexById.get(typeOrId) : indexByName.get(typeOrId);
+  const supports = (ref, duty) => {
+    const i = indexById.has(ref) ? indexById.get(ref) : indexByName.get(upper(ref));
     if (i == null || i >= 8) return false;
     if (['CP/PI', 'PC', 'MP', 'IP', 'SP'].includes(duty)) return true;
     return duty === 'SOLO' && (i === 5 || i === 6);
   };
-  let count = flights.filter((f) => !supports(f.aircraftId || f.type, f.duty)).length;
+  let count = flights.filter((f) => !supports(resolveAircraft(f, idx)?.id, f.duty)).length;
   const covered = new Set();
   for (const [key, value] of Object.entries(opening?.byTypeDuty || {})) {
     if (num(value) <= 0) continue;
-    const split = key.lastIndexOf('|'); const type = key.slice(0, split); const duty = key.slice(split + 1);
-    const i = indexByName.get(type); if (i != null) covered.add(`${aircraft[i].id}|${duty}`);
-    if (!supports(type, duty)) count++;
+    const split = key.lastIndexOf('|'); const ref = key.slice(0, split); const duty = key.slice(split + 1);
+    const a = resolveRef(ref, idx); if (a) covered.add(`${a.id}|${duty}`);
+    if (!supports(ref, duty)) count++;
   }
   for (const [id, duties] of Object.entries(opening?.byAircraftDuty || {})) {
     for (const [duty, value] of Object.entries(duties || {})) if (num(value) > 0 && !covered.has(`${id}|${duty}`) && !supports(id, duty)) count++;
@@ -167,28 +213,41 @@ export function fmt(x) {
 }
 
 export function emptyTotals() {
-  return { hours: 0, single: 0, multi: 0, sim: 0, xc: 0, nightUn: 0, nvg: 0, ifr: 0, imc: 0, byType: {}, byTypeDuty: {}, byAircraftDuty: {} };
+  // hours = ชั่วโมงบินจริง (SIM นอก SP ตัดออก), loggedHours = ชั่วโมงที่กรอกทั้งหมด (ยังใช้แยก SIM)
+  return {
+    hours: 0, loggedHours: 0, single: 0, multi: 0, sim: 0,
+    xc: 0, nightUn: 0, nvg: 0, ifr: 0, imc: 0,
+    byType: {}, byTypeDuty: {}, byAircraftDuty: {},
+  };
 }
 
-export function addFlight(t, f) {
+export function addFlight(t, f, idx = index) {
   const h10 = hoursToTenths(f.hours);
   if (h10 === null || h10 <= 0 || h10 > 240) return t;
   const h = h10 / 10;
-  t.hours = addHours(t.hours, h);
-  if (SINGLE.has(f.type)) t.single = addHours(t.single, h);
-  if (MULTI.has(f.type)) t.multi = addHours(t.multi, h);
-  if (SIMS.has(f.type)) t.sim = addHours(t.sim, h);
+  const a = resolveAircraft(f, idx);
+  const key = typeKey(f, idx);
+
+  t.loggedHours = addHours(t.loggedHours, h);
+  if (isRealFlight(f, idx)) t.hours = addHours(t.hours, h);
+  if (a?.kind === 'single') t.single = addHours(t.single, h);
+  if (a?.kind === 'multi') t.multi = addHours(t.multi, h);
+  if (a?.kind === 'sim') t.sim = addHours(t.sim, h);
   for (const c of CONDS) t[c.key] = addHours(t[c.key], num(f[c.key]));
-  t.byType[f.type] = addHours(t.byType[f.type] || 0, h);
-  const k = `${f.type}|${f.duty}`;
+
+  t.byType[key] = addHours(t.byType[key] || 0, h);
+  const k = `${key}|${f.duty ?? ''}`;
   t.byTypeDuty[k] = addHours(t.byTypeDuty[k] || 0, h);
-  if (f.aircraftId) { t.byAircraftDuty[f.aircraftId] ||= {}; t.byAircraftDuty[f.aircraftId][f.duty] = addHours(t.byAircraftDuty[f.aircraftId][f.duty] || 0, h); }
+  if (a?.id) {
+    t.byAircraftDuty[a.id] ||= {};
+    t.byAircraftDuty[a.id][f.duty ?? ''] = addHours(t.byAircraftDuty[a.id][f.duty ?? ''] || 0, h);
+  }
   return t;
 }
 
 export function addTotals(a, b) {
   const t = emptyTotals();
-  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = addHours(num(a?.[k]), num(b?.[k]));
+  for (const k of ['hours', 'loggedHours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) t[k] = addHours(num(a?.[k]), num(b?.[k]));
   t._dataIssues = [...(a?._dataIssues || []), ...(b?._dataIssues || [])];
   for (const src of [a, b]) {
     for (const [k, v] of Object.entries(src?.byType || {})) t.byType[k] = addHours(t.byType[k] || 0, num(v));
@@ -201,48 +260,52 @@ export function addTotals(a, b) {
   return t;
 }
 
-// ยอดยกมา (Opening balance) = ค่าที่พิมพ์ไว้ใน "Total Last Page" ของชีต S1
-// แถวนี้ในไฟล์: I=ชม.รวม J=Single K=Multi L..S=แบบอากาศยาน T..X=สภาพการบิน Z..BM=แบบ x หน้าที่ BN..BO=SOLO
+// ยอดยกมาจาก "Total Last Page" ของ S1 แถว 23
 const DUTY_BLOCKS = [
-  ['CP/PI', 25, 8],
-  ['PC', 33, 8],
-  ['MP', 41, 8],
-  ['IP', 49, 8],
-  ['SP', 57, 8],
+  ['CP/PI', 25, 8], ['PC', 33, 8], ['MP', 41, 8], ['IP', 49, 8], ['SP', 57, 8],
 ];
-// SOLO มีแค่ 2 คอลัมน์: BN=ช่อง5 (H269), BO=ช่อง6 (EN48) — index 0-based ของแถว = 65, 66
 const SOLO_OPENING = [[65, 5], [66, 6]];
-// names = ชื่อแบบของแต่ละช่องในไฟล์ (ค่าเริ่มต้น = รายการปัจจุบัน)
-export function parseOpening(row, names = AIRCRAFT) {
+
+// names = ชื่อหัวคอลัมน์ L3:S3 จากไฟล์; canonical key = aircraftId เมื่อรู้จัก
+export function parseOpening(row, names = AIRCRAFT, aircraftList = null) {
+  const idx = makeIndex(aircraftList || aircraftRecords);
   const t = emptyTotals();
   const n = (i) => num(row[i]);
-  t.hours = n(8); t.single = n(9); t.multi = n(10);
-  names.forEach((a, i) => { if (a && i < 8 && n(11 + i)) t.byType[a] = n(11 + i); });
+  const keyOf = (name) => idx.byName.get(upper(name))?.id || upper(name);
+  t.hours = n(8); t.loggedHours = n(8);
+  t.single = n(9); t.multi = n(10);
+  names.forEach((a, i) => { if (a && i < 8 && n(11 + i)) t.byType[keyOf(a)] = n(11 + i); });
   t.xc = n(19); t.nightUn = n(20); t.nvg = n(21); t.ifr = n(22); t.imc = n(23);
   for (const [duty, start, count] of DUTY_BLOCKS) {
     for (let i = 0; i < count; i++) {
       const v = n(start + i);
-      if (v && names[i]) { t.byTypeDuty[`${names[i]}|${duty}`] = v; const a = aircraftByName(names[i]); if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id][duty] = v; } }
+      if (!v || !names[i]) continue;
+      const k = keyOf(names[i]);
+      t.byTypeDuty[`${k}|${duty}`] = v;
+      const a = idx.byName.get(upper(names[i]));
+      if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id][duty] = v; }
     }
   }
   for (const [col, slot] of SOLO_OPENING) {
     const v = n(col);
-    if (v && names[slot]) { t.byTypeDuty[`${names[slot]}|SOLO`] = v; const a = aircraftByName(names[slot]); if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id].SOLO = v; } }
+    if (!v || !names[slot]) continue;
+    const k = keyOf(names[slot]);
+    t.byTypeDuty[`${k}|SOLO`] = v;
+    const a = idx.byName.get(upper(names[slot]));
+    if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id].SOLO = v; }
   }
-  t.sim = Object.entries(t.byType).reduce((a, [k, v]) => a + (SIMS.has(k) ? v : 0), 0);
+  t.sim = Object.entries(t.byType).reduce((s, [k, v]) => idx.byId.get(k)?.kind === 'sim' ? s + v : s, 0);
+  // I23 เป็นชั่วโมงบินจริง; SIM นอก SP ยังอยู่ในคอลัมน์ L:S → เก็บยอดที่กรอกทั้งหมดแยกต่างหาก
+  t.loggedHours = Math.max(t.hours, Object.values(t.byType).reduce((s, v) => addHours(s, v), 0));
   return t;
 }
 
-// เดาชนิดเครื่องยนต์จากชื่อ (ใช้เมื่อไม่มีข้อมูลอื่น)
 export const guessKind = (name) => (/^(SIM|FFS|FTD|FNPT)/i.test(name) ? 'sim' : 'single');
 
-// ชื่อแบบอากาศยานของแต่ละช่อง (8 ช่อง) จากหัวคอลัมน์ L3:S3 ของชีตแรกในไฟล์ Excel (ช่องว่าง = '')
-// ws = อ็อบเจกต์ชีตของ SheetJS (เข้าถึงด้วยชื่อเซลล์ เช่น ws.L3.v, ws.J4.f)
 export function sheetSlotNames(ws) {
   return ['L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S'].map((c) => String(ws?.[`${c}3`]?.v ?? '').trim().toUpperCase());
 }
 
-// รายการแบบอากาศยานในไฟล์ + ชนิดเครื่องยนต์ (อ่านจากสูตรช่อง Single/Multi)
 export function sheetAircraft(ws) {
   const quoted = (f) => [...String(f || '').matchAll(/"([^"]+)"/g)].map((m) => m[1].trim().toUpperCase());
   const single = new Set(quoted(ws?.J4?.f));
@@ -253,35 +316,33 @@ export function sheetAircraft(ws) {
   }));
 }
 
-export function sumFlights(list) {
+export function sumFlights(list, aircraftList = null) {
   const t = emptyTotals();
-  for (const f of list) addFlight(t, f);
+  for (const f of list) addFlight(t, f, makeIndex(aircraftList || aircraftRecords));
   return t;
 }
 
-// เรียงตามลำดับที่กรอก (เหมือนสมุดล็อกบุ๊ก) — ข้อมูลนำเข้าคงลำดับเดิมของไฟล์ Excel, เที่ยวใหม่ต่อท้าย
+// P1-3: ord หาย → sort ตามวันที่ก่อน id (ไม่ใช่ UUID ล้วน ๆ)
 export function sortFlights(list) {
-  return [...list].sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return [...list].sort((a, b) =>
+    (Number(a?.ord) || 0) - (Number(b?.ord) || 0)
+    || String(a?.date ?? '').localeCompare(String(b?.date ?? ''))
+    || String(a?.id ?? '').localeCompare(String(b?.id ?? '')),
+  );
 }
 
-// หาค่า ord ให้เที่ยวบินใหม่ เพื่อแทรกตามวันที่ (หลังเที่ยวสุดท้ายที่วันที่ <= วันที่นี้)
-// sorted = รายการที่เรียงตาม ord แล้ว (ไม่รวมเที่ยวที่กำลังแก้)
 export function slotOrd(sorted, date) {
   if (!sorted.length) return Date.now();
   let at = -1;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    if (sorted[i].date <= date) { at = i; break; }
-  }
+  for (let i = sorted.length - 1; i >= 0; i--) if (sorted[i].date <= date) { at = i; break; }
   const last = sorted.length - 1;
   if (at === last) return Math.max(Date.now(), (sorted[last].ord ?? 0) + 1);
   if (at === -1) return (sorted[0].ord ?? 0) - 1;
   return ((sorted[at].ord ?? 0) + (sorted[at + 1].ord ?? 0)) / 2;
 }
 
-// ระยะห่าง ord ระหว่างเที่ยวบิน (เว้นไว้ให้แทรกกลางได้หลายครั้งก่อนต้องจัดเลขใหม่)
 export const ORD_STEP = 1048576;
 
-// ช่องที่จะแทรกแคบเกินไปหรือไม่ (ทศนิยม ord ใกล้หมดความละเอียด) → ต้อง renumber ก่อนแทรก
 export function slotGapTooSmall(sorted, date) {
   let at = -1;
   for (let i = sorted.length - 1; i >= 0; i--) if (sorted[i].date <= date) { at = i; break; }
@@ -289,19 +350,16 @@ export function slotGapTooSmall(sorted, date) {
   return (sorted[at + 1].ord ?? 0) - (sorted[at].ord ?? 0) < 1e-3;
 }
 
-// จัดเลข ord ใหม่ให้ห่างเท่ากัน (คงลำดับเดิม)
 export function renumber(sorted) {
   return sorted.map((f, i) => ({ ...f, ord: i * ORD_STEP }));
 }
 
-// จำนวนรายการที่วันที่ย้อนกลับเมื่อเทียบกับรายการก่อนหน้า
 export function countOutOfOrder(sorted) {
   let n = 0;
   for (let i = 1; i < sorted.length; i++) if (sorted[i].date < sorted[i - 1].date) n++;
   return n;
 }
 
-// เรียงใหม่ตามวันที่ (คงลำดับเดิมของเที่ยวที่วันเดียวกัน) → คืนเฉพาะรายการที่ ord เปลี่ยน
 export function reorderByDate(sorted) {
   const byDate = sorted
     .map((f, i) => ({ f, i }))
@@ -312,8 +370,6 @@ export function reorderByDate(sorted) {
   return changed;
 }
 
-// แบ่งเป็นหน้า (หน้าละ 18 รายการ) พร้อมยอด This Page / Last Page / Forward
-// หน้าแรกใช้ยอดยกมา (opening) เป็น Last Page
 export function paginate(sorted, opening = null) {
   const pages = [];
   let forward = addTotals(opening, null);
@@ -334,8 +390,6 @@ export const todayISO = () => {
 };
 export const dmy = (iso) => (iso ? iso.split('-').reverse().join('/') : '');
 
-// ---------- นำเข้าจาก Excel (แถว = array ตามคอลัมน์ A=0) ----------
-// serial → ISO โดยไม่พึ่งเขตเวลา
 export function serialToISO(serial) {
   const ms = Math.round((serial - 25569) * 86400 * 1000);
   const d = new Date(ms);
@@ -344,7 +398,6 @@ export function serialToISO(serial) {
 
 const clean = (v) => (v === null || v === undefined ? '' : String(v).trim());
 
-// วันที่ที่พิมพ์เป็นข้อความใน Excel: 2024-06-12, 12/06/2024, 12-6-24 (ปีพุทธศักราชแปลงให้) → ISO หรือ ''
 export function parseDateText(str) {
   const t = String(str ?? '').trim();
   let y, m, d;
@@ -364,7 +417,6 @@ export function rowToFlight(row) {
   let hours = row[8];
   if (typeof hours === 'string' && /^\s*\d+([.,]\d+)?\s*$/.test(hours)) hours = num(hours);
   if (typeof hours !== 'number' || !(hours > 0)) return null;
-  // เก็บค่าต้นฉบับไว้ตรวจสอบ; sanitizeFlight จะทำเครื่องหมายค่าที่ไม่ใช่ 0.1 ชั่วโมง
   let date = '';
   if (typeof dateRaw === 'number') date = dateRaw > 0 ? serialToISO(dateRaw) : '';
   else if (dateRaw instanceof Date) date = dateRaw.toISOString().slice(0, 10);
@@ -372,49 +424,37 @@ export function rowToFlight(row) {
   if (!date) return null;
   const type = clean(row[2]).toUpperCase().slice(0, 12);
   if (!type) return null;
-  // รับทั้ง number และ string ตัวเลขจาก Excel (เช่น "1.5")
   const n = (v) => Math.max(0, num(v));
-  // หมายเหตุ: แม่แบบ v1.1+ = BP (index 67), รุ่นก่อน = BE (index 56), เก่าสุด = BC (index 54)
   const note = clean(row[67]) || clean(row[56]) || clean(row[54]);
   let mission = clean(row[6]);
-  if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training'; // แก้สะกดเดิมในไฟล์
+  if (/^flight\s*trainni?ng$/i.test(mission)) mission = 'Flight Training';
   return {
-    date,
-    type,
+    date, type,
     aircraftId: aircraftByName(type)?.id || null,
-    number: clean(row[3]),
-    dep: clean(row[4]),
-    dest: clean(row[5]),
-    mission,
-    duty: clean(row[7]),
-    hours,
-    xc: n(row[19]),
-    nightUn: n(row[20]),
-    nvg: n(row[21]),
-    ifr: n(row[22]),
-    imc: n(row[23]),
-    note,
+    number: clean(row[3]), dep: clean(row[4]), dest: clean(row[5]), mission,
+    duty: clean(row[7]), hours,
+    xc: n(row[19]), nightUn: n(row[20]), nvg: n(row[21]), ifr: n(row[22]), imc: n(row[23]), note,
   };
 }
 
-// แถวข้อมูลในช่วงแถว 4–21 ที่มีเนื้อหาแต่ rowToFlight อ่านไม่ได้ (เช่น วันที่เป็นข้อความที่แปลงไม่ได้ หรือไม่มีแบบอากาศยาน)
 export function isUnreadableDataRow(row, rowIndex) {
   return rowIndex >= 3 && rowIndex <= 20 && (num(row[8]) > 0 || clean(row[2]) !== '' || row[1] != null) && !rowToFlight(row);
 }
 
-// ล้างข้อมูลจากไฟล์สำรอง/ภายนอก: เก็บเฉพาะฟิลด์ที่รู้จัก ตัวเลขเป็นตัวเลข ข้อความจำกัดความยาว
-export function sanitizeFlight(f) {
+// ---------- ทำความสะอาดข้อมูลจาก backup/ภายนอก ----------
+export function sanitizeFlight(f, aircraftList = null) {
   if (!f || typeof f !== 'object') return null;
+  const idx = makeIndex(aircraftList || aircraftRecords);
   const id = String(f.id ?? '').slice(0, 64);
   const date = String(f.date ?? '');
-  let type = String(f.type ?? '').trim().toUpperCase().slice(0, 12);
+  const type = String(f.type ?? '').trim().toUpperCase().slice(0, 12);
   const hours = num(f.hours);
   if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !(hours > 0) || hours > 24) return null;
   const txt = (v, max) => String(v ?? '').trim().slice(0, max);
   const dutyRaw = txt(f.duty, 120);
   const dutyUpper = dutyRaw.toUpperCase();
-  const duty = DUTIES.includes(dutyUpper) ? dutyUpper : dutyRaw; // Preserve unknown/legacy duty text exactly; never coerce to CP/PI.
-  const matched = f.aircraftId ? aircraftById(f.aircraftId) : aircraftByName(type);
+  const duty = DUTIES.includes(dutyUpper) ? dutyUpper : dutyRaw;
+  const matched = f.aircraftId ? idx.byId.get(String(f.aircraftId)) : idx.byName.get(type);
   const issues = Array.isArray(f._dataIssues) ? f._dataIssues.filter((item) => !(matched && item.code === 'UNKNOWN_AIRCRAFT') && !(matched?.duties.includes(duty) && item.code === 'UNCONFIGURED_DUTY')) : [];
   if (!isValidHourIncrement(hours, { max: 24 })) issues.push({ code: 'INVALID_HOUR_PRECISION', field: 'hours', value: hours });
   if (!duty) issues.push({ code: 'MISSING_DUTY', field: 'duty', value: duty });
@@ -434,48 +474,94 @@ export function sanitizeFlight(f) {
     const v = Math.max(0, num(f[c.key]));
     out[c.key] = Math.min(v, hours);
   }
-  if (issues.length) out._dataIssues = issues.filter((item, index, all) => all.findIndex((x) => x.code === item.code && x.field === item.field && x.value === item.value) === index);
+  if (issues.length) out._dataIssues = issues.filter((item, i, all) => all.findIndex((x) => x.code === item.code && x.field === item.field && x.value === item.value) === i);
   return out;
 }
 
-export function sanitizeOpening(o) {
+// P1-2: ทุก key ของยอดยกมาถูกแปลงเป็น aircraftId; ถ้า name-map กับ id-map ขัดกันให้ flag แทนเลือกข้างเงียบ ๆ
+export function sanitizeOpening(o, aircraftList = null) {
   if (!o || typeof o !== 'object') return null;
+  const idx = makeIndex(aircraftList || aircraftRecords);
   const t = emptyTotals();
   const invalid = Array.isArray(o._dataIssues) ? [...o._dataIssues] : [];
-  for (const k of ['hours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc']) {
+  const scalarKeys = ['hours', 'loggedHours', 'single', 'multi', 'sim', 'xc', 'nightUn', 'nvg', 'ifr', 'imc'];
+  for (const k of scalarKeys) {
     const value = Math.max(0, num(o[k]));
-    if (!isValidHourIncrement(value, { allowZero: true })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: k, value });
+    if (!isValidHourIncrement(value, { allowZero: true })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: k, value: o[k] });
     else t[k] = value;
   }
-  for (const key of ['byType', 'byTypeDuty']) {
-    for (const [k, v] of Object.entries(o[key] && typeof o[key] === 'object' ? o[key] : {})) {
-      const value = num(v);
-      if (String(k).length > 120 || value <= 0) continue;
-      if (!isValidHourIncrement(value, { allowZero: false })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: `${key}.${k}`, value });
-      else t[key][k] = value;
-    }
-  }
+  if (!Object.prototype.hasOwnProperty.call(o, 'loggedHours')) t.loggedHours = t.hours;
+
+  const putIssue = (field, value) => invalid.push({ code: 'INVALID_HOUR_PRECISION', field, value });
+
+  // byAircraftDuty คือแหล่งความจริงหลัก
   for (const [id, duties] of Object.entries(o.byAircraftDuty && typeof o.byAircraftDuty === 'object' ? o.byAircraftDuty : {})) {
     for (const [duty, raw] of Object.entries(duties || {})) {
       const value = num(raw);
       if (value <= 0) continue;
-      if (!isValidHourIncrement(value, { allowZero: false })) invalid.push({ code: 'INVALID_HOUR_PRECISION', field: `byAircraftDuty.${id}.${duty}`, value });
-      else { t.byAircraftDuty[id] ||= {}; t.byAircraftDuty[id][duty] = value; }
+      if (!isValidHourIncrement(value)) { putIssue(`byAircraftDuty.${id}.${duty}`, raw); continue; }
+      t.byAircraftDuty[id] ||= {};
+      t.byAircraftDuty[id][duty] = value;
     }
   }
-  if (invalid.length) t._dataIssues = invalid;
+
+  for (const [rawKey, raw] of Object.entries(o.byType && typeof o.byType === 'object' ? o.byType : {})) {
+    const value = num(raw);
+    if (String(rawKey).length > 120 || value <= 0) continue;
+    if (!isValidHourIncrement(value)) { putIssue(`byType.${rawKey}`, raw); continue; }
+    const a = idx.byId.get(String(rawKey)) || idx.byName.get(upper(rawKey));
+    t.byType[a?.id || upper(rawKey)] = value;
+  }
+
+  for (const [rawKey, raw] of Object.entries(o.byTypeDuty && typeof o.byTypeDuty === 'object' ? o.byTypeDuty : {})) {
+    const split = rawKey.lastIndexOf('|');
+    const ref = rawKey.slice(0, split);
+    const duty = rawKey.slice(split + 1);
+    const value = num(raw);
+    if (String(rawKey).length > 120 || value <= 0) continue;
+    if (!isValidHourIncrement(value)) { putIssue(`byTypeDuty.${rawKey}`, raw); continue; }
+    const a = idx.byId.get(String(ref)) || idx.byName.get(upper(ref));
+    const key = `${a?.id || upper(ref)}|${duty}`;
+    const canonical = a ? t.byAircraftDuty[a.id]?.[duty] : undefined;
+    if (canonical != null) {
+      if (Math.abs(canonical - value) > 1e-8 && !invalid.some((x) => x.code === 'OPENING_CONFLICT' && x.field === rawKey)) {
+        invalid.push({ code: 'OPENING_CONFLICT', field: rawKey, value, canonical });
+      }
+      t.byTypeDuty[key] = canonical;
+    } else {
+      t.byTypeDuty[key] = value;
+      if (a) { t.byAircraftDuty[a.id] ||= {}; t.byAircraftDuty[a.id][duty] = value; }
+    }
+  }
+
+  // P1-2: byAircraftDuty เป็นแหล่งความจริง → derive byType ให้ตรงกันเสมอ
+  for (const [id, duties] of Object.entries(t.byAircraftDuty)) {
+    const sum = Object.values(duties).reduce((s, v) => addHours(s, v), 0);
+    if (sum > 0) t.byType[id] = t.byType[id] != null ? Math.max(t.byType[id], sum) : sum;
+  }
+  const simFromType = Object.entries(t.byType).reduce((s, [k, v]) => idx.byId.get(k)?.kind === 'sim' ? s + v : s, 0);
+  if (simFromType > 0) t.sim = simFromType;
+  else t.sim = Object.entries(t.byTypeDuty).reduce((s, [k, v]) => idx.byId.get(String(k).split('|')[0])?.kind === 'sim' ? s + v : s, 0);
+  t.loggedHours = Math.max(t.loggedHours, Object.values(t.byType).reduce((s, v) => addHours(s, v), 0));
+
+  if (invalid.length) t._dataIssues = invalid.filter((item, i, all) => all.findIndex((x) => x.code === item.code && x.field === item.field && JSON.stringify(x.value) === JSON.stringify(item.value)) === i);
   return t;
 }
+export const resolveOpening = (opening, aircraftList = null) => sanitizeOpening(opening, aircraftList);
 
-// Pure prepare phase for v1 -> v2 migration. It never writes to storage.
-// The caller must show this preview and obtain confirmation before committing.
+// ---------- Migration v1 -> v2 (pure) ----------
 export function prepareMigrationV2({ aircraft = DEFAULT_AIRCRAFT, flights = [], opening = null } = {}) {
   const config = normalizeAircraft(aircraft);
-  const byName = new Map(config.map((a) => [a.name, a]));
-  const migratedFlights = flights.map((source) => {
-    const f = sanitizeFlight(source);
-    if (!f) return { source, migrated: null, issue: 'UNREADABLE_FLIGHT' };
-    const a = f.aircraftId ? config.find((item) => item.id === f.aircraftId) : byName.get(f.type);
+  const idx = makeIndex(config);
+  const quarantine = [];
+  const migratedFlights = flights.map((source, i) => {
+    const f = sanitizeFlight(source, config);
+    if (!f) {
+      const rawId = String(source?.id ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60);
+      quarantine.push({ id: rawId || `unreadable_${i + 1}`, issue: 'UNREADABLE_FLIGHT', source });
+      return { source, migrated: null, issue: 'UNREADABLE_FLIGHT' };
+    }
+    const a = resolveAircraft(f, idx);
     if (a) {
       f.aircraftId = a.id;
       f._dataIssues = (f._dataIssues || []).filter((item) => item.code !== 'UNKNOWN_AIRCRAFT' && !(item.code === 'UNCONFIGURED_DUTY' && a.duties.includes(f.duty)));
@@ -485,14 +571,33 @@ export function prepareMigrationV2({ aircraft = DEFAULT_AIRCRAFT, flights = [], 
     }
     return { source, migrated: f, issue: null };
   });
-  const oldOpening = opening ? sanitizeOpening(opening) : null;
+
+  const valid = migratedFlights.filter((x) => x.migrated).map((x) => x.migrated);
+  const anchored = valid.filter((f) => Number(f.ord) > 0);
+  const missingOrd = valid.filter((f) => !(Number(f.ord) > 0));
+  const withoutOrd = missingOrd.length;
+  if (withoutOrd) {
+    const byDate = missingOrd
+      .map((f, i) => ({ f, i }))
+      .sort((a, b) => String(a.f.date).localeCompare(String(b.f.date)) || a.i - b.i);
+    if (!anchored.length) {
+      // ไม่มีลำดับเดิมเลย → ใช้วันที่เป็นแกน (ไม่ใช่ UUID)
+      byDate.forEach((e, i) => { e.f.ord = i * ORD_STEP; });
+    } else {
+      // มีลำดับอยู่แล้ว → เติมเฉพาะรายการที่หาย ต่อท้ายโดยไม่ขยับของเดิม
+      let next = Math.max(...anchored.map((f) => Number(f.ord))) + ORD_STEP;
+      byDate.forEach((e) => { e.f.ord = next; next += ORD_STEP; });
+    }
+  }
+
+  const oldOpening = opening ? sanitizeOpening(opening, config) : null;
   const byAircraftDuty = Object.fromEntries(Object.entries(oldOpening?.byAircraftDuty || {}).map(([id, duties]) => [id, { ...(duties || {}) }]));
   const unresolvedOpening = {};
   for (const [key, value] of Object.entries(oldOpening?.byTypeDuty || {})) {
     const split = key.lastIndexOf('|');
-    const name = key.slice(0, split);
+    const ref = key.slice(0, split);
     const duty = key.slice(split + 1);
-    const a = byName.get(name);
+    const a = idx.byId.get(String(ref)) || idx.byName.get(upper(ref));
     if (a) {
       byAircraftDuty[a.id] ||= {};
       if (byAircraftDuty[a.id][duty] == null) byAircraftDuty[a.id][duty] = value;
@@ -501,10 +606,12 @@ export function prepareMigrationV2({ aircraft = DEFAULT_AIRCRAFT, flights = [], 
   const migratedOpening = oldOpening ? {
     ...oldOpening,
     version: 2,
+    byTypeDuty: Object.fromEntries(Object.entries(oldOpening.byTypeDuty || {}).filter(([k]) => !(k in unresolvedOpening))),
     byAircraftDuty,
     _unresolvedByTypeDuty: unresolvedOpening,
     _dataIssues: [...(oldOpening._dataIssues || []), ...Object.entries(unresolvedOpening).map(([field, value]) => ({ code: 'UNKNOWN_AIRCRAFT_OPENING', field, value }))],
   } : null;
+
   const dataQuality = {
     invalidFlights: migratedFlights.filter((x) => !x.migrated).length,
     invalidHourFlights: migratedFlights.filter((x) => x.migrated?._dataIssues?.some((i) => i.code === 'INVALID_HOUR_PRECISION')).length,
@@ -512,21 +619,21 @@ export function prepareMigrationV2({ aircraft = DEFAULT_AIRCRAFT, flights = [], 
     unknownAircraftFlights: migratedFlights.filter((x) => x.migrated?._dataIssues?.some((i) => i.code === 'UNKNOWN_AIRCRAFT')).length,
     unresolvedOpeningEntries: Object.keys(unresolvedOpening).length,
     openingIssues: oldOpening?._dataIssues?.length || 0,
+    ordBackfilled: withoutOrd,
   };
   return {
     version: 2,
     config: { version: 2, v: 2, aircraft: config },
     flights: migratedFlights,
+    quarantine,
     opening: migratedOpening,
     dataQuality,
     requiresReview: Object.values(dataQuality).some((n) => n > 0),
   };
 }
 
-export const flightKey = (f) =>
-  [f.date, f.type, f.number, f.dep, f.dest, f.duty, num(f.hours)].join('|');
+export const flightKey = (f) => [f.date, f.type, f.number, f.dep, f.dest, f.duty, num(f.hours)].join('|');
 
-// ตัดรายการที่ซ้ำกับของเดิม (นับจำนวนซ้ำด้วย เที่ยวเหมือนกันสองรอบในวันเดียวกันไม่หาย)
 export function filterNew(existing, incoming) {
   const seen = new Map();
   for (const f of existing) seen.set(flightKey(f), (seen.get(flightKey(f)) || 0) + 1);

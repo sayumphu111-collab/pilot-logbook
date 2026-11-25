@@ -70,9 +70,9 @@ test('Hidden helper columns extend sheet dimensions without changing visible col
   const source = '<worksheet><dimension ref="A1:DD34"/><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="68" width="10"/></cols><sheetData/></worksheet>';
   const out = addHiddenExportColumns(source);
   const twice = addHiddenExportColumns(out);
-  assert.match(out, /dimension ref="A1:DF34"/);
-  assert.match(out, /<col min="109" max="110" width="0" hidden="1"/);
-  assert.equal((twice.match(/<col min="109" max="110"/g) || []).length, 1);
+  assert.match(out, /dimension ref="A1:DG34"/);
+  assert.match(out, /<col min="109" max="111" width="0" hidden="1"/);
+  assert.equal((twice.match(/<col min="109" max="111"/g) || []).length, 1);
 });
 
 

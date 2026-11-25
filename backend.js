@@ -8,12 +8,23 @@ export const firebaseReady = !!firebaseConfig.apiKey && !String(firebaseConfig.a
 
 const stamp = () => Date.now();
 const stripUndefined = (o) => JSON.parse(JSON.stringify(o));
+const safeDocId = (v, fallback = 'doc') => String(v ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) || fallback;
+
+// P0-2: สถานะซิงค์ต้องมาจาก "snapshot ปัจจุบัน" ไม่ใช่ flag ที่เคยเจอ server แล้วค้างไว้
+export const SYNC_STREAMS = ['flights', 'config', 'opening', 'quarantine'];
+export function computeSyncStatus(streams, pendingOps = 0) {
+  const list = Array.isArray(streams) ? streams : SYNC_STREAMS.map((k) => streams?.[k]);
+  const pending = pendingOps > 0 || list.some((s) => s?.pending === true);
+  const allServer = list.length > 0 && list.every((s) => s && s.fromCache === false);
+  return pending ? 'pending' : allServer ? 'synced' : 'offline';
+}
 
 // ---------------------------------------------------------------- โหมดในเครื่อง
 function createLocalBackend() {
   const KEY = 'pilot-logbook.local.v1';
-  let db = { flights: {}, opening: null, config: null };
+  let db = { flights: {}, opening: null, config: null, quarantine: {} };
   try { db = { ...db, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch { /* ว่าง */ }
+  if (!db.quarantine || typeof db.quarantine !== 'object') db.quarantine = {};
   let cb = null;
 
   const persist = () => {
@@ -24,7 +35,8 @@ function createLocalBackend() {
     cb?.onFlights(Object.values(db.flights));
     cb?.onOpening(db.opening);
     cb?.onConfig(db.config);
-    cb?.onStatus('local');
+    cb?.onQuarantine?.(Object.values(db.quarantine));
+    cb?.onStatus?.('local');
   };
 
   return {
@@ -36,7 +48,14 @@ function createLocalBackend() {
     deleteFlight(id) { delete db.flights[id]; persist(); return Promise.resolve(); },
     saveOpening(o) { db.opening = o; persist(); return Promise.resolve(); },
     saveConfig(c) { db.config = c; persist(); return Promise.resolve(); },
-    deleteAll() { db = { flights: {}, opening: null, config: null }; persist(); },
+    // P0-3: เก็บ flight ที่อ่านไม่ได้ไว้ตรวจซ่อม แทนที่จะตัดทิ้งเงียบ ๆ
+    saveQuarantine(list) {
+      (list || []).forEach((q, i) => { db.quarantine[safeDocId(q?.id, `unreadable_${i + 1}`)] = stripUndefined(q); });
+      persist();
+      return Promise.resolve();
+    },
+    // P0-5: คืน Promise และลบทุกชุดข้อมูล รวม quarantine
+    deleteAll() { db = { flights: {}, opening: null, config: null, quarantine: {} }; persist(); return Promise.resolve(); },
   };
 }
 
@@ -60,22 +79,35 @@ async function createFirebaseBackend() {
   let unsubs = [];
 
   const flightsCol = () => fs.collection(db, 'users', uid, 'flights');
+  const quarantineCol = () => fs.collection(db, 'users', uid, 'quarantine');
   const openingDoc = () => fs.doc(db, 'users', uid, 'meta', 'opening');
   const configDoc = () => fs.doc(db, 'users', uid, 'meta', 'config');
-  let serverFlights = false;
-  let serverConfig = false;
-  let serverOpening = false;
-  let pendingFlights = false;
-  let pendingConfig = false;
-  let pendingOpening = false;
+
+  // P0-2: เก็บสถานะ "ล่าสุด" ของแต่ละ stream + จำนวน write ที่ยังไม่ขึ้น server
+  const streams = Object.fromEntries(SYNC_STREAMS.map((k) => [k, { fromCache: null, pending: false }]));
+  let pendingOps = 0;
   let notified = false;
-  // Migration may start only after all three data streams have reached the server without pending writes.
-  const checkSynced = () => {
-    const allServer = serverFlights && serverConfig && serverOpening;
-    const pending = pendingFlights || pendingConfig || pendingOpening;
-    cb?.onStatus?.(pending ? 'pending' : allServer ? 'synced' : 'offline');
-    if (allServer && !pending && !notified) { notified = true; cb.onSynced?.(); }
+
+  const resetSyncState = () => {
+    for (const s of Object.values(streams)) { s.fromCache = null; s.pending = false; }
+    pendingOps = 0;
+    notified = false;
   };
+  const checkSynced = () => {
+    const status = computeSyncStatus(streams, pendingOps);
+    cb?.onStatus?.(status);
+    if (status === 'synced' && !notified) { notified = true; cb.onSynced?.(); }
+  };
+  // setDoc/deleteDoc ของ Firestore resolve หลัง server ack → ใช้กันเคส delete ที่ hasPendingWrites ไม่ชัด
+  const withPending = (p) => {
+    pendingOps += 1;
+    checkSynced();
+    return Promise.resolve(p).finally(() => {
+      pendingOps = Math.max(0, pendingOps - 1);
+      checkSynced();
+    });
+  };
+
   const friendly = (e) => {
     const code = e?.code || '';
     if (code === 'permission-denied') return 'ไม่มีสิทธิ์บันทึกข้อมูล — ลองออกจากระบบแล้วเข้าใหม่ หรือตรวจว่า Publish กฎ Firestore แล้ว (ดู README)';
@@ -88,30 +120,34 @@ async function createFirebaseBackend() {
   function listen() {
     unsubs.forEach((u) => u());
     unsubs = [];
-    serverFlights = false; serverConfig = false; serverOpening = false;
-    pendingFlights = false; pendingConfig = false; pendingOpening = false; notified = false;
-    unsubs.push(fs.onSnapshot(flightsCol(), { includeMetadataChanges: true }, (snap) => {
+    resetSyncState();
+    checkSynced(); // ยังไม่มี snapshot → offline ทันที แม้เคย synced มาก่อน
+
+    const watch = (key, ref, onValue) => {
+      unsubs.push(fs.onSnapshot(ref, { includeMetadataChanges: true }, (snap) => {
+        onValue(snap);
+        streams[key].fromCache = snap.metadata.fromCache;
+        streams[key].pending = snap.metadata.hasPendingWrites;
+        checkSynced();
+      }, fail));
+    };
+
+    watch('flights', flightsCol(), (snap) => {
       cb.onFlights(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      pendingFlights = snap.metadata.hasPendingWrites;
-      if (!snap.metadata.fromCache) serverFlights = true;
-      checkSynced();
-    }, fail));
-    unsubs.push(fs.onSnapshot(configDoc(), { includeMetadataChanges: true }, (snap) => {
+    });
+    watch('config', configDoc(), (snap) => {
       let c = null;
       try { c = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
       cb.onConfig(c);
-      pendingConfig = snap.metadata.hasPendingWrites;
-      if (!snap.metadata.fromCache) serverConfig = true;
-      checkSynced();
-    }, fail));
-    unsubs.push(fs.onSnapshot(openingDoc(), { includeMetadataChanges: true }, (snap) => {
+    });
+    watch('opening', openingDoc(), (snap) => {
       let o = null;
       try { o = snap.exists() ? JSON.parse(snap.data().json) : null; } catch { /* ข้าม */ }
       cb.onOpening(o);
-      pendingOpening = snap.metadata.hasPendingWrites;
-      if (!snap.metadata.fromCache) serverOpening = true;
-      checkSynced();
-    }, fail));
+    });
+    watch('quarantine', quarantineCol(), (snap) => {
+      cb.onQuarantine?.(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
   }
 
   return {
@@ -124,7 +160,10 @@ async function createFirebaseBackend() {
         uid = user?.uid || null;
         cb.onUser(user ? { email: user.email, name: user.displayName } : null);
         if (user) listen();
-        else { cb.onFlights([]); cb.onOpening(null); cb.onConfig(null); }
+        else {
+          cb.onFlights([]); cb.onOpening(null); cb.onConfig(null); cb.onQuarantine?.([]);
+          resetSyncState(); checkSynced();
+        }
       });
     },
     async signIn() {
@@ -136,7 +175,7 @@ async function createFirebaseBackend() {
     },
     signOut() { return auth.signOut(fbAuth); },
     saveFlight(f) {
-      return fs.setDoc(fs.doc(db, 'users', uid, 'flights', f.id), { ...stripUndefined(f), updatedAt: stamp() }).catch((e) => { fail(e); throw e; });
+      return withPending(fs.setDoc(fs.doc(db, 'users', uid, 'flights', f.id), { ...stripUndefined(f), updatedAt: stamp() }).catch((e) => { fail(e); throw e; }));
     },
     saveMany(list) {
       const writes = [];
@@ -145,22 +184,52 @@ async function createFirebaseBackend() {
         for (const f of list.slice(i, i + 400)) {
           batch.set(fs.doc(db, 'users', uid, 'flights', f.id), { ...stripUndefined(f), updatedAt: stamp() });
         }
-        writes.push(batch.commit().catch((e) => { fail(e); throw e; }));
+        writes.push(withPending(batch.commit().catch((e) => { fail(e); throw e; })));
       }
       return Promise.all(writes);
     },
-    deleteFlight(id) { return fs.deleteDoc(fs.doc(db, 'users', uid, 'flights', id)).catch((e) => { fail(e); throw e; }); },
-    saveOpening(o) { return fs.setDoc(openingDoc(), { json: JSON.stringify(o), updatedAt: stamp() }).catch((e) => { fail(e); throw e; }); },
-    saveConfig(c) { return fs.setDoc(configDoc(), { json: JSON.stringify(c), updatedAt: stamp() }).catch((e) => { fail(e); throw e; }); },
-    // ลบข้อมูลทั้งหมดของผู้ใช้คนนี้ (เที่ยวบิน ยอดยกมา การตั้งค่า)
-    deleteAll(ids) {
-      for (let i = 0; i < ids.length; i += 400) {
+    deleteFlight(id) { return withPending(fs.deleteDoc(fs.doc(db, 'users', uid, 'flights', id)).catch((e) => { fail(e); throw e; })); },
+    saveOpening(o) { return withPending(fs.setDoc(openingDoc(), { json: JSON.stringify(o), updatedAt: stamp() }).catch((e) => { fail(e); throw e; })); },
+    saveConfig(c) { return withPending(fs.setDoc(configDoc(), { json: JSON.stringify(c), updatedAt: stamp() }).catch((e) => { fail(e); throw e; })); },
+    // P0-3: flight ที่อ่านไม่ได้ถูกเก็บแยก เพื่อไม่ให้หายและยังตรวจซ่อมได้
+    saveQuarantine(list) {
+      const writes = [];
+      const items = list || [];
+      for (let i = 0; i < items.length; i += 400) {
         const batch = fs.writeBatch(db);
-        for (const id of ids.slice(i, i + 400)) batch.delete(fs.doc(db, 'users', uid, 'flights', id));
-        batch.commit().catch(fail);
+        for (const q of items.slice(i, i + 400)) {
+          const id = safeDocId(q?.id, `unreadable_${i + 1}`);
+          batch.set(fs.doc(db, 'users', uid, 'quarantine', id), { ...stripUndefined(q), updatedAt: stamp() });
+        }
+        writes.push(withPending(batch.commit().catch((e) => { fail(e); throw e; })));
       }
-      fs.deleteDoc(openingDoc()).catch(fail);
-      fs.deleteDoc(configDoc()).catch(fail);
+      return Promise.all(writes);
+    },
+    // P0-5: รอทุก batch ให้สำเร็จจริงก่อนคืน Promise + ลบ quarantine ด้วย
+    async deleteAll(ids) {
+      const ops = [];
+      const chunks = (arr, size, fn) => {
+        for (let i = 0; i < arr.length; i += size) fn(arr.slice(i, i + size));
+      };
+
+      chunks(ids || [], 400, (part) => {
+        const batch = fs.writeBatch(db);
+        for (const id of part) batch.delete(fs.doc(db, 'users', uid, 'flights', id));
+        ops.push(withPending(batch.commit().catch((e) => { fail(e); throw e; })));
+      });
+
+      let qDocs = [];
+      try { qDocs = (await fs.getDocs(quarantineCol())).docs; }
+      catch (e) { fail(e); throw e; }
+      chunks(qDocs, 400, (part) => {
+        const batch = fs.writeBatch(db);
+        for (const d of part) batch.delete(d.ref);
+        ops.push(withPending(batch.commit().catch((e) => { fail(e); throw e; })));
+      });
+
+      ops.push(withPending(fs.deleteDoc(openingDoc()).catch((e) => { fail(e); throw e; })));
+      ops.push(withPending(fs.deleteDoc(configDoc()).catch((e) => { fail(e); throw e; })));
+      await Promise.all(ops);
     },
   };
 }

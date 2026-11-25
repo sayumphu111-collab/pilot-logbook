@@ -25,8 +25,8 @@ test('Valid flight hours sum directly by Aircraft × Duty', () => {
   const flights = [flight('a', 1.2), flight('b', 2.3), flight('c', 0.5, { duty: 'PC' })];
   const total = sumFlights(flights);
   assert.equal(total.hours, 4.0);
-  assert.equal(total.byTypeDuty['AW139|CP/PI'], 3.5);
-  assert.equal(total.byTypeDuty['AW139|PC'], 0.5);
+  assert.equal(total.byTypeDuty['ac_aw139|CP/PI'], 3.5);
+  assert.equal(total.byTypeDuty['ac_aw139|PC'], 0.5);
 });
 
 test('Invalid precision is preserved and flagged, but excluded from totals', () => {
@@ -54,8 +54,8 @@ test('Opening Balance accepts only 0.1 increments and reports original invalid v
     byTypeDuty: { 'AW139|CP/PI': 12.25 },
   });
   assert.equal(opening.hours, 12.3);
-  assert.equal(opening.byType.AW139, 12.3);
-  assert.equal(opening.byTypeDuty['AW139|CP/PI'], undefined);
+  assert.equal(opening.byType.ac_aw139, 12.3);
+  assert.equal(opening.byTypeDuty['ac_aw139|CP/PI'], undefined);
   assert.deepEqual(opening._dataIssues[0], {
     code: 'INVALID_HOUR_PRECISION', field: 'byTypeDuty.AW139|CP/PI', value: 12.25,
   });
@@ -66,7 +66,7 @@ test('Opening Balance and page cumulative totals use integer tenths', () => {
   const opening = sanitizeOpening({ hours: 0.3, byType: { AW139: 0.3 }, byTypeDuty: { 'AW139|CP/PI': 0.3 } });
   const pages = paginate([flight('a', 1.2), flight('b', 2.3)], opening);
   assert.equal(pages[0].forward.hours, 3.8);
-  assert.equal(pages[0].forward.byTypeDuty['AW139|CP/PI'], 3.8);
+  assert.equal(pages[0].forward.byTypeDuty['ac_aw139|CP/PI'], 3.8);
 });
 
 test('Aircraft Configuration v2 supports more than eight aircraft and flexible duties', () => {
