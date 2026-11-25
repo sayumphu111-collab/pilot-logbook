@@ -530,17 +530,28 @@ function renderSummary() {
   const keys = Object.keys(t.byType).filter((k) => t.byType[k] > 0);
   const nameOf = (k) => L.aircraftById(k)?.name || k;
   const kindOfKey = (k) => L.aircraftById(k)?.kind || (L.SIMS.has(k) ? 'sim' : L.MULTI.has(k) ? 'multi' : 'single');
-  // P1-1: ทุก key เป็น aircraftId; P1-SIM: SIM เข้าตารางหน้าที่เฉพาะ SP
+  // P1-1: ทุก key เป็น aircraftId
+  // ตารางหลัก: SIM เข้าหน้าที่เฉพาะ SP (เป็นชั่วโมงบินจริง) — duty อื่นแยกแสดงในหมายเหตุใต้ตาราง
   const dutyVal = (k, d) => kindOfKey(k) === 'sim' ? (d === 'SP' ? L.num(t.byTypeDuty[`${k}|SP`]) : 0) : L.num(t.byTypeDuty[`${k}|${d}`]);
   const dutyKeys = keys.filter((k) => kindOfKey(k) !== 'sim' || dutyVal(k, 'SP') > 0);
   const duties = L.DUTIES.filter((d) => dutyKeys.some((k) => dutyVal(k, d) > 0));
   if (!duties.length) duties.push('CP/PI');
   const cell = (v) => (v ? L.fmt(v) : '–');
 
-  const rows = dutyKeys.map((k) => `<tr><td>${esc(nameOf(k))}</td>${duties.map((d) => `<td>${cell(dutyVal(k, d))}</td>`).join('')}<td><b>${L.fmt(t.byType[k])}</b></td></tr>`).join('');
+  // รวมของแถว SIM ในตารางหลักต้องเป็น SP เท่านั้น (ไม่ใช่ยอด SIM ทุกหน้าที่)
+  const rowTotal = (k) => kindOfKey(k) === 'sim' ? dutyVal(k, 'SP') : L.num(t.byType[k]);
+  const rows = dutyKeys.map((k) => `<tr><td>${esc(nameOf(k))}</td>${duties.map((d) => `<td>${cell(dutyVal(k, d))}</td>`).join('')}<td><b>${L.fmt(rowTotal(k))}</b></td></tr>`).join('');
   const dutyTotals = duties.map((d) => dutyKeys.reduce((a, k) => a + dutyVal(k, d), 0));
-  const simDutyHours = keys.filter((k) => kindOfKey(k) === 'sim').reduce((a, k) => a + L.num(t.byType[k]), 0);
-  const simRealHours = keys.filter((k) => kindOfKey(k) === 'sim').reduce((a, k) => a + dutyVal(k, 'SP'), 0);
+
+  // SIM แยกตามหน้าที่: แสดงเป็นหมายเหตุใต้ตารางเดิม (ไม่เพิ่มตารางใหม่)
+  // ไม่นำไปบวกกับชั่วโมงเครื่องจริง; เฉพาะ SP ที่นับเป็นชั่วโมงบินจริง
+  const simKeys = keys.filter((k) => kindOfKey(k) === 'sim');
+  const simByDuty = L.simDutyBreakdown(t);
+  const simDuties = L.DUTIES.filter((d) => L.num(simByDuty[d]) > 0);
+  const simRealHours = L.num(simByDuty.SP);
+  const simNote = simKeys.length
+    ? `SIM ทั้งหมด ${L.fmt(t.sim)} ชม. แยกตามหน้าที่: ${simDuties.length ? simDuties.map((d) => `${d} ${L.fmt(simByDuty[d])}`).join(' · ') : 'ยังไม่มีข้อมูล'} — ไม่นำไปบวกกับชั่วโมงเครื่องจริง; เฉพาะ SP ${L.fmt(simRealHours)} ชม. รวมในชั่วโมงบินจริง/Excel (รวมยอดยกมาตั้งแต่เป็นนักเรียน)`
+    : '';
 
   const today = L.todayISO();
   const since = (days) => {
@@ -561,7 +572,7 @@ function renderSummary() {
         <thead><tr><th>แบบ</th>${duties.map((d) => `<th>${d}</th>`).join('')}<th>รวม</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="${duties.length + 2}" class="muted">ยังไม่มีข้อมูล</td></tr>`}</tbody>
         <tfoot><tr><td>รวม</td>${dutyTotals.map((v) => `<td><b>${v ? L.fmt(v) : '–'}</b></td>`).join('')}<td><b>${L.fmt(t.hours)}</b></td></tr></tfoot>
-      </table></div>${simDutyHours ? `<p class="muted small" style="margin:8px 0 0">หมายเหตุ: ชั่วโมง SIM ทั้งหมด ${L.fmt(simDutyHours)} ชม. แยกแสดงในช่อง Simulator — มีเฉพาะหน้าที่ SP ${L.fmt(simRealHours)} ชม. ที่นับเป็นชั่วโมงบินจริง/ยอดรวม/Excel</p>` : ''}</section>
+      </table></div>${simNote ? `<p class="muted small" style="margin:8px 0 0">${esc(simNote)}</p>` : ''}</section>
     <section class="card"><h2>ประเภทการบิน</h2><div class="stats">
       ${stat('Single engine', t.single)}${stat('Multi engine', t.multi)}
       ${stat('Simulator', t.sim)}${stat('X-Country', t.xc)}

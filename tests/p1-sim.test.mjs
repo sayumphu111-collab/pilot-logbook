@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_AIRCRAFT, paginate, prepareMigrationV2, sanitizeFlight,
-  sanitizeOpening, setAircraft, sortFlights, sumFlights,
+  sanitizeOpening, setAircraft, simDutyBreakdown, sortFlights, sumFlights,
 } from '../logic.js';
 import {
-  buildDynamicAircraftSummary, openingValues, pageValues, retargetSimHoursColumn,
+  buildDynamicAircraftSummary, openingValues, pageValues, rebuildSummary, retargetSimHoursColumn,
 } from '../xlsxfill.js';
 
 const config = [
@@ -94,6 +94,63 @@ test('Aircraft Summary ของ SIM หรือ DG เพื่อยังแ
   assert.ok(hoursCols.includes('DG'));
   assert.ok(hoursCols.includes('I'));
   setAircraft(DEFAULT_AIRCRAFT);
+});
+
+const summaryXml = () => {
+  const cols = 'BCDEFGHNOPQ'.split('');
+  let xml = '';
+  for (let r = 5; r <= 12; r++) xml += `<row r="${r}">${cols.map((c) => `<c r="${c}${r}"><v>0</v></c>`).join('')}</row>`;
+  xml += `<row r="20">${cols.map((c) => `<c r="${c}20"><f>SUM(C20:H20,N20)</f><v>0</v></c>`).join('')}</row>`;
+  return xml;
+};
+const summaryCell = (xml, ref) => new RegExp(`<c r="${ref}"(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</c>)`).exec(xml)?.[0] || '';
+
+test('Summary: ชั่วโมงบินรวม (Q20) ไม่รวม SIM นอก SP แต่คอลัมน์ N ยังเป็นยอดจำลองเต็ม', () => {
+  const out = rebuildSummary(summaryXml(), DEFAULT_AIRCRAFT); // SIM อยู่แถว 12 (index 7)
+  assert.match(summaryCell(out, 'Q20'), /SUM\(O20:P20,H12\)/);
+  assert.doesNotMatch(summaryCell(out, 'Q20'), /N12|N20/);
+  assert.match(summaryCell(out, 'N12'), /'S50'!S24/); // ยอด SIM เต็มยังอยู่ใน N ตามเงื่อนไขเดิม
+  assert.match(summaryCell(out, 'H12'), /'S50'!BM24/); // SP ของ SIM (BF+7)
+  assert.match(summaryCell(out, 'D12'), /'S50'!AG24/); // CP/PI ของ SIM แสดงแยก (Z+7)
+  assert.match(summaryCell(out, 'P5'), /SUM\(C5:H5\)/); // AW139 = multi → P
+  assert.match(summaryCell(out, 'P6'), /SUM\(C6:H6\)/); // AW149 = multi → P
+});
+
+test('Summary: SIM ไม่ได้อยู่แถว 12 ก็ยังตัด SIM นอก SP ออกจาก Q20', () => {
+  const cfg = [
+    { id: 'a', name: 'AW139', kind: 'multi', duties: ['CP/PI', 'SP'] },
+    { id: 's', name: 'SIM', kind: 'sim', duties: ['CP/PI', 'IP', 'SP'] },
+  ];
+  const out = rebuildSummary(summaryXml(), cfg); // SIM อยู่แถว 6 (index 1)
+  assert.match(summaryCell(out, 'Q20'), /SUM\(O20:P20,H6\)/);
+  assert.doesNotMatch(summaryCell(out, 'Q20'), /N6|N20/);
+  assert.match(summaryCell(out, 'N6'), /'S50'!S24/);
+  assert.match(summaryCell(out, 'H6'), /'S50'!BG24/); // SP ของ SIM (BF+1)
+  assert.match(summaryCell(out, 'D6'), /'S50'!AA24/); // CP/PI ของ SIM แสดงแยก (Z+1)
+});
+
+test('สรุป SIM แยกตามหน้าที่: แสดงทุก duty แต่ไม่ปนกับชั่วโมงเครื่องจริง', () => {
+  setAircraft(config);
+  const t = sumFlights(flights());
+  const byDuty = simDutyBreakdown(t);
+  assert.equal(byDuty['CP/PI'], 1.2);
+  assert.equal(byDuty.SP, 0.5);
+  assert.equal(byDuty.IP, undefined);
+  assert.equal(Object.values(byDuty).reduce((a, b) => a + b, 0), 1.7); // เฉพาะ SIM
+  assert.equal(t.hours, 2.5); // เครื่องจริง 2.0 + SIM SP 0.5
+  setAircraft(DEFAULT_AIRCRAFT);
+});
+
+test('Summary: ยอดรวมตามหน้าที่ (แถว 20) หักแถว SIM ออกทั้งแถว', () => {
+  const out = rebuildSummary(summaryXml(), DEFAULT_AIRCRAFT);
+  assert.match(summaryCell(out, 'D20'), /SUM\(D5:D19\)-D12/);
+  assert.match(summaryCell(out, 'H20'), /SUM\(H5:H19\)-H12/);
+  const moved = rebuildSummary(summaryXml(), [
+    { id: 'a', name: 'AW139', kind: 'multi', duties: ['CP/PI'] },
+    { id: 's', name: 'SIM', kind: 'sim', duties: ['CP/PI', 'SP'] },
+  ]);
+  assert.match(summaryCell(moved, 'D20'), /SUM\(D5:D19\)-D6/);
+  assert.match(summaryCell(moved, 'H20'), /SUM\(H5:H19\)-H6/);
 });
 
 test('sanitizeFlight ไม่พังเมื่อ Array.map ส่ง index เข้ามาเป็น argument ที่สอง', () => {

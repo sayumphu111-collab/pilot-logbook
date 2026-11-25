@@ -260,6 +260,24 @@ export function addTotals(a, b) {
   return t;
 }
 
+// สรุปชั่วโมง SIM แยกตามหน้าที่ (ไม่ปนกับชั่วโมงบินของเครื่องจริง)
+// ใช้แสดงในหน้าสรุปของแอป; SP ยังคงเป็นชั่วโมงบินจริงตาม isRealFlight
+export function simDutyBreakdown(t, aircraftList = null) {
+  const idx = makeIndex(aircraftList || aircraftRecords);
+  const out = {};
+  for (const [key, value] of Object.entries(t?.byTypeDuty || {})) {
+    const split = key.lastIndexOf('|');
+    if (split < 0) continue;
+    const ref = key.slice(0, split);
+    const duty = key.slice(split + 1);
+    const a = idx.byId.get(String(ref)) || idx.byName.get(upper(ref));
+    const kind = a?.kind || (SIMS.has(upper(ref)) ? 'sim' : null);
+    if (kind !== 'sim') continue;
+    out[duty] = addHours(out[duty] || 0, num(value));
+  }
+  return out;
+}
+
 // ยอดยกมาจาก "Total Last Page" ของ S1 แถว 23
 const DUTY_BLOCKS = [
   ['CP/PI', 25, 8], ['PC', 33, 8], ['MP', 41, 8], ['IP', 49, 8], ['SP', 57, 8],

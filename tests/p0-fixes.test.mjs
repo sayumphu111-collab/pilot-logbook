@@ -64,13 +64,15 @@ test('P0-4: legacy Summary maps SIM/SINGLE/MULTI to N/O/P and preserves I:M', ()
   assert.match(cell('P6'), /SUM\(C6:H6\)/);       // MULTI → P
   assert.equal(cell('O6'), '<c r="O6"/>');
   assert.match(cell('N7'), /'S50'!S24/);          // SIM → N ตามแม่แบบ (ยังนับทุก duty)
-  // SIM ที่ไม่ใช่ SP ไม่เข้าตาราง C:H — duty เดิม CP/PI/IP ถูกกวาดทิ้ง
-  assert.equal(cell('D7'), '<c r="D7"/>');
-  assert.equal(cell('G7'), '<c r="G7"/>');
+  // SIM แสดงทุกหน้าที่แยกต่างหากในแถวของตัวเอง (ไม่ปนกับชั่วโมงเครื่องจริง)
+  assert.match(cell('D7'), /'S50'!AB24/); // CP/PI (Z+2)
+  assert.match(cell('G7'), /'S50'!AZ24/); // IP (AX+2)
+  assert.match(cell('H7'), /'S50'!BH24/); // SP (BF+2)
+  assert.equal(cell('C7'), '<c r="C7"/>'); // SOLO ไม่มีช่องใน slot 2
   assert.equal(cell('M7'), '<c r="M7"><v>0</v></c>'); // I:M ไม่ถูกเคลียร์
 });
 
-test('P1-SIM: เฉพาะหน้าที่ SP ของ SIM ที่เข้า C:H ของ Summary', () => {
+test('P1-SIM: SIM แสดงทุกหน้าที่แยกต่างหากใน Summary', () => {
   const cols = 'BCDEFGHIJKLMNOPQ'.split('');
   let xml = '';
   for (let r = 5; r <= 7; r++) xml += `<row r="${r}">${cols.map((c) => `<c r="${c}${r}"><v>0</v></c>`).join('')}</row>`;
@@ -80,9 +82,9 @@ test('P1-SIM: เฉพาะหน้าที่ SP ของ SIM ที่เ
     { id: 's', name: 'SIM', kind: 'sim', duties: ['CP/PI', 'IP', 'SP'] },
   ]);
   const cell = (ref) => new RegExp(`<c r="${ref}"(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</c>)`).exec(out)?.[0] || '';
-  // SIM อยู่ช่องที่ 3 (index 2) → SP อยู่คอลัมน์ BF+2 = BH
+  // SIM อยู่ช่องที่ 3 (index 2) → SP อยู่ BF+2 = BH, CP/PI อยู่ Z+2 = AB, IP อยู่ AX+2 = AZ
   assert.match(cell('H7'), /'S50'!BH24/);
-  assert.equal(cell('D7'), '<c r="D7"/>');
-  assert.equal(cell('G7'), '<c r="G7"/>');
+  assert.match(cell('D7'), /'S50'!AB24/);
+  assert.match(cell('G7'), /'S50'!AZ24/);
   assert.match(cell('N7'), /'S50'!S24/);
 });

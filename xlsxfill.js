@@ -1,7 +1,7 @@
 // xlsxfill.js — กรอกข้อมูลลงไฟล์แม่แบบ (template.xlsx = ไฟล์ต้นฉบับที่ล้างข้อมูลแล้ว)
 // แก้เฉพาะค่าในช่องข้อมูล สูตร/สี/เส้น/dropdown ของต้นฉบับอยู่ครบ ไม่ใช้ DOM จึงทดสอบด้วย Node ได้
 import {
-  AIRCRAFT, CONDS, PAGE_SIZE, addTotals, getAircraft, isDefaultAircraft,
+  AIRCRAFT, CONDS, DUTIES, PAGE_SIZE, addTotals, getAircraft, isDefaultAircraft,
   isRealFlight, isValidHourIncrement, num, resolveAircraft,
 } from './logic.js';
 
@@ -237,15 +237,17 @@ function setSummaryCell(xml, ref, spec) {
 const SIM_TOTAL_REF = "'S50'!S24";
 
 export function rebuildSummary(xml, aircraft) {
+  const simRows = [];
+  const simSpRefs = [];
   for (let k = 0; k < 8; k++) {
     const r = 5 + k;
     const a = aircraft[k];
     const cells = {};
     if (a) {
       cells.B = { text: a.name };
-      // P1-SIM: ใน Summary เดิม SIM เข้า C:H เฉพาะหน้าที่ SP เท่านั้น
-      // duty อื่นของ SIM ยังอยู่ในชีต Aircraft Summary และคอลัมน์ N (SIM) ตามเดิม
-      const summaryDuties = a.kind === 'sim' ? (a.duties || []).filter((d) => d === 'SP') : (a.duties || []);
+      // SIM: แสดงชั่วโมงแยกตามทุกหน้าที่ในแถวของตัวเอง (ไม่ปนกับชั่วโมงเครื่องจริง)
+      // ยอดรวมแถว 20 จะหักแถว SIM ออกทั้งแถว; N ยังเป็นยอด SIM เต็มตามเงื่อนไขเดิม
+      const summaryDuties = a.kind === 'sim' ? DUTIES : (a.duties || []);
       const refs = summaryDuties.map((d) => ({ d, ref: dutySheetRef(d, k) })).filter((x) => x.ref);
       for (const x of refs) {
         const col = DUTY_SUMMARY_COL[x.d];
@@ -257,10 +259,24 @@ export function rebuildSummary(xml, aircraft) {
           ? { f: SIM_TOTAL_REF }
           : { f: `SUM(C${r}:H${r})` };
       }
+      if (a.kind === 'sim') {
+        simRows.push(r);
+        // เก็บตำแหน่ง SP ของ SIM ไว้ใช้คำนวณ "ชั่วโมงบินรวม" (Q20)
+        if (cells[DUTY_SUMMARY_COL.SP]) simSpRefs.push(`${DUTY_SUMMARY_COL.SP}${r}`);
+      }
     }
-    // เฉพาะคอลัมน์ที่ rebuilding เท่านั้น — I:M (สภาพการบิน) และ Q คงค่าจากแม่แบบไว้
+    // เฉพาะคอลัมน์ที่ rebuilding เท่านั้น — I:M (สภาพการบิน) คงค่าจากแม่แบบไว้
     for (const col of 'BCDEFGHNOP') xml = setSummaryCell(xml, `${col}${r}`, cells[col] || null);
   }
+  // ยอดรวมตามหน้าที่ (แถว 20) ต้องหักแถว SIM ออก — ไม่นำ SIM ไปบวกกับชั่วโมงบินเครื่องจริง
+  for (const col of 'CDEFGH') {
+    const minus = simRows.length ? simRows.map((r) => `-${col}${r}`).join('') : '';
+    xml = setSummaryCell(xml, `${col}20`, { f: `SUM(${col}5:${col}19)${minus}` });
+  }
+  // Q20 (คอลัมน์ TOTAL = "ชั่วโมงบินรวม") = ชั่วโมงบินจริงทั้งหมด
+  // = single/multi (O20:P20) + เฉพาะ SP ของ SIM (นับเป็นชั่วโมงบินจริงตั้งแต่เป็นนักเรียน)
+  // คอลัมน์ N ยังอ้าง S24 เหมือนเดิม (ยอด SIM เต็ม/logged hours)
+  xml = setSummaryCell(xml, 'Q20', { f: `SUM(${'O20:P20'.concat(simSpRefs.length ? `,${simSpRefs.join(',')}` : '')})` });
   return xml;
 }
 
